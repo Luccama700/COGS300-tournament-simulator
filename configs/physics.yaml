@@ -1,0 +1,35 @@
+# Physics tuning parameters — adjust these to match your real robot's behavior.
+# These are INDEPENDENT of the robot geometry config (robot-config.yaml).
+
+physics:
+  # Movement
+  max_speed: 80.0            # cm/s — top forward speed
+  min_speed: -40.0           # cm/s — max reverse speed
+  acceleration: 120.0        # cm/s² — how fast it gets to max speed
+  deceleration: 200.0        # cm/s² — how fast it stops (friction/braking)
+  idle_deceleration: 60.0    # cm/s² — coast-down when no input
+
+  # Turning (differential drive — 2WD + caster)
+  max_turn_rate: 180.0       # degrees/s — max rotation speed
+  turn_acceleration: 360.0   # degrees/s² — how fast turn rate ramps up
+  turn_deceleration: 540.0   # degrees/s² — how fast turning stops
+
+  # Collision
+  wall_bounce: 0.2           # velocity multiplier on wall hit (0=dead stop, 1=full bounce)
+  wall_slide_friction: 0.5   # friction when sliding along a wall
+  collision_margin: 1.0      # cm — extra buffer from walls
+
+  # Sensor noise (HC-SR04 simulation)
+  sensor_noise_std: 2.0      # cm — gaussian noise standard deviation
+  sensor_dropout_chance: 0.02 # probability of a bad reading per sensor per frame
+  sensor_dropout_value: 0.0  # what a bad reading returns (0 = min range)
+  sensor_min_range: 2.0      # cm — dead zone (HC-SR04 can't read below ~2cm)
+
+# Display
+display:
+  window_width: 1000
+  window_height: 700
+  fps: 60
+  background_color: [245, 245, 240]
+  grid_spacing: 50           # cm — grid line spacing in world units
+  pixels_per_cm: 4           # zoom level

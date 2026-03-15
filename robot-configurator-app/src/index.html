@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Robot Configurator</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+  :root {
+    --bg:#fafbfc;--bg2:#f0f2f5;--bg3:#e8ebef;--tx:#1a1a1a;--tx2:#666;--tx3:#999;--tx4:#bbb;
+    --bd:rgba(0,0,0,0.08);--bd2:rgba(0,0,0,0.12);--accent:#3B8BD4;--accent-bg:rgba(59,139,212,0.06);
+    --danger:#d44;--success:#1D9E75;--font:'IBM Plex Mono','SF Mono','JetBrains Mono',monospace;--radius:8px;
+  }
+  @media(prefers-color-scheme:dark){:root{
+    --bg:#111215;--bg2:#1a1c20;--bg3:#22252a;--tx:#e8e8e8;--tx2:#999;--tx3:#666;--tx4:#444;
+    --bd:rgba(255,255,255,0.06);--bd2:rgba(255,255,255,0.1);--accent-bg:rgba(59,139,212,0.1);
+  }}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:var(--font);background:var(--bg);color:var(--tx);-webkit-app-region:drag;overflow:hidden;height:100vh}
+  button,input[type=text],input[type=range]{-webkit-app-region:no-drag}
+  .app{display:flex;flex-direction:column;height:100vh;padding:0 20px 16px}
+  .titlebar{height:42px;display:flex;align-items:flex-end;padding-bottom:6px;flex-shrink:0}
+  .header{display:flex;align-items:center;justify-content:space-between;padding:0 0 12px;margin-bottom:14px;border-bottom:1px solid var(--bd);flex-shrink:0}
+  .header-left{display:flex;align-items:center;gap:10px}
+  .logo{width:28px;height:28px;border-radius:7px;background:linear-gradient(135deg,#3B8BD4,#1D9E75);display:flex;align-items:center;justify-content:center}
+  .header h1{font-size:14px;font-weight:600;letter-spacing:-0.01em}
+  .header .sub{font-size:10px;color:var(--tx3);margin-top:1px}
+  .header-btns{display:flex;gap:5px}
+  .main{display:flex;gap:16px;flex:1;min-height:0;overflow:hidden}
+  .blueprint-panel{flex:1;display:flex;flex-direction:column;min-width:0}
+  .blueprint-wrap{flex:1;border-radius:12px;overflow:hidden;background:var(--bg2);border:0.5px solid var(--bd)}
+  .blueprint-wrap svg{width:100%;height:100%;display:block}
+  .legend{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
+  .legend-pill{display:flex;align-items:center;gap:4px;padding:2px 8px;border-radius:20px;font-size:10px;color:var(--tx2);cursor:pointer;border:0.5px solid transparent;background:transparent;font-family:var(--font);transition:all .12s}
+  .legend-pill.active{border-color:currentColor}
+  .controls-panel{width:280px;flex-shrink:0;display:flex;flex-direction:column;min-height:0}
+  .tab-bar{display:flex;gap:0;background:var(--bg2);border-radius:8px;padding:3px;margin-bottom:14px;flex-shrink:0}
+  .tab-btn{flex:1;padding:7px 0;font-size:10px;font-family:var(--font);border:none;border-radius:6px;cursor:pointer;font-weight:400;background:transparent;color:var(--tx3);transition:all .12s}
+  .tab-btn.active{background:var(--bg);color:var(--tx);font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,0.08)}
+  @media(prefers-color-scheme:dark){.tab-btn.active{box-shadow:0 1px 4px rgba(0,0,0,0.3)}}
+  .tab-content{flex:1;overflow-y:auto;overflow-x:hidden;padding-right:4px}
+  .tab-content::-webkit-scrollbar{width:4px}
+  .tab-content::-webkit-scrollbar-thumb{background:var(--tx4);border-radius:2px}
+  .section-label{font-size:10px;font-weight:600;color:var(--tx3);text-transform:uppercase;letter-spacing:0.08em;margin:0 0 8px}
+  .slider-row{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+  .slider-row.compact{margin-bottom:5px}
+  .slider-label{font-size:11px;color:var(--tx2);min-width:64px}
+  .compact .slider-label{font-size:10px;min-width:54px}
+  .slider-row input[type=range]{flex:1;accent-color:var(--accent);height:4px}
+  .slider-val{font-size:11px;font-weight:600;min-width:36px;text-align:right}
+  .compact .slider-val{font-size:10px}
+  .drive-option{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:8px;border:0.5px solid var(--bd);cursor:pointer;font-size:12px;color:var(--tx2);background:transparent;font-family:var(--font);width:100%;text-align:left;transition:all .12s;margin-bottom:4px}
+  .drive-option.active{border-color:var(--accent);color:var(--accent);background:var(--accent-bg);font-weight:600}
+  .radio-dot{width:13px;height:13px;border-radius:50%;border:1.5px solid var(--tx4);display:flex;align-items:center;justify-content:center;flex-shrink:0}
+  .drive-option.active .radio-dot{border-color:var(--accent)}
+  .radio-inner{width:6px;height:6px;border-radius:50%;background:var(--accent);display:none}
+  .drive-option.active .radio-inner{display:block}
+  .specs-card{margin-top:18px;padding:12px;border-radius:10px;background:var(--bg2);border:0.5px solid var(--bd)}
+  .specs-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px 16px;font-size:11px}
+  .specs-grid .k{color:var(--tx3)}.specs-grid .v{color:var(--tx);font-weight:500;text-align:right}
+  .sensor-item{padding:8px 10px;border-radius:8px;cursor:pointer;border:0.5px solid transparent;transition:all .12s;margin-bottom:2px}
+  .sensor-item.active{background:var(--bg2);border-color:var(--bd2)}
+  .sensor-head{display:flex;align-items:center;gap:8px}
+  .sensor-name{flex:1;font-size:12px;font-weight:500}
+  .sensor-name-input{flex:1;border:none;background:transparent;font-size:12px;font-weight:600;color:var(--tx);font-family:var(--font);outline:none;padding:0}
+  .sensor-angle{font-size:10px;color:var(--tx3)}
+  .sensor-detail{margin-top:8px;padding-left:15px}
+  .btn{font-size:11px;padding:5px 14px;border-radius:6px;cursor:pointer;font-family:var(--font);font-weight:500;border:0.5px solid var(--bd2);background:transparent;color:var(--tx2);transition:all .12s}
+  .btn:hover{background:var(--bg2)}.btn.accent{border-color:var(--accent);color:var(--accent);background:var(--accent-bg)}
+  .btn.muted{color:var(--tx3)}.btn.small{font-size:10px;padding:4px 10px}
+  .btn.danger{color:var(--danger);font-size:10px;padding:3px 10px;border-radius:5px}.btn:disabled{opacity:0.4;cursor:default}
+  .export-panel{margin-top:14px;padding:14px;border-radius:12px;background:var(--bg2);border:0.5px solid var(--bd);flex-shrink:0}
+  .export-panel pre{font-size:10px;line-height:1.6;color:var(--tx2);white-space:pre-wrap;margin:10px 0 0;max-height:200px;overflow:auto;padding:12px;border-radius:8px;background:var(--bg)}
+  .sensor-handle{cursor:grab}.sensor-handle:active{cursor:grabbing}
+  .ir-info{padding:8px 10px;margin-bottom:10px;border-radius:8px;font-size:10px;line-height:1.5}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <div class="titlebar"></div>
+  <div class="header">
+    <div class="header-left">
+      <div class="logo"><svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="2" y="5" width="12" height="7" rx="1.5" fill="white" opacity="0.9"/><rect x="0" y="10" width="4" height="3" rx="1" fill="white" opacity="0.7"/><rect x="12" y="10" width="4" height="3" rx="1" fill="white" opacity="0.7"/><circle cx="8" cy="4" r="1.5" fill="white" opacity="0.7"/></svg></div>
+      <div><h1>Robot configurator</h1><div class="sub">Maze navigation & line following — sensor layout</div></div>
+    </div>
+    <div class="header-btns">
+      <button class="btn" id="btn-save" onclick="saveConfig()">Save</button>
+      <button class="btn" id="btn-export" onclick="toggleExport()">Export</button>
+      <button class="btn muted" onclick="resetAll()">Reset</button>
+    </div>
+  </div>
+  <div class="main">
+    <div class="blueprint-panel">
+      <div class="blueprint-wrap"><svg id="robot-svg" viewBox="0 0 560 460" preserveAspectRatio="xMidYMid meet"></svg></div>
+      <div class="legend" id="legend"></div>
+    </div>
+    <div class="controls-panel">
+      <div class="tab-bar">
+        <button class="tab-btn active" data-tab="chassis" onclick="switchTab('chassis')">Chassis</button>
+        <button class="tab-btn" data-tab="sensors" onclick="switchTab('sensors')">Ultrasonic</button>
+        <button class="tab-btn" data-tab="ir" onclick="switchTab('ir')">IR Line</button>
+      </div>
+      <div class="tab-content" id="tab-content"></div>
+    </div>
+  </div>
+  <div class="export-panel" id="export-panel" style="display:none">
+    <div style="display:flex;gap:6px">
+      <button class="btn small" onclick="copyExport('yaml')">Copy YAML</button>
+      <button class="btn small" onclick="copyExport('json')">Copy JSON</button>
+      <button class="btn small" onclick="saveExportFile()">Save to file...</button>
+    </div>
+    <pre id="export-content"></pre>
+  </div>
+</div>
+<script>
+const COLORS=["#3B8BD4","#D85A30","#1D9E75","#D4537E","#7F77DD","#639922","#BA7517","#E24B4A"];
+const IR_COLORS=["#E8A030","#C850C0","#50B8C8","#E05050","#60C060","#8080D0"];
+const DRIVES=[{id:"caster",label:"2WD + Caster"},{id:"servo",label:"Servo Steer"},{id:"4wd",label:"4WD Steer"}];
+const DEFAULT_SENSORS=[
+  {id:"s1",name:"Front",mountX:0,mountY:-0.48,angle:0,range:200,sweep:30},
+  {id:"s4",name:"Left",mountX:-0.5,mountY:0,angle:-90,range:200,sweep:30},
+  {id:"s5",name:"Right",mountX:0.5,mountY:0,angle:90,range:200,sweep:30},
+  {id:"s6",name:"Rear",mountX:0,mountY:0.48,angle:180,range:150,sweep:30},
+];
+const DEFAULT_IR=[
+  {id:"ir1",name:"IR Front-left",mountX:-0.35,mountY:-0.48,threshold:500},
+  {id:"ir2",name:"IR Front-right",mountX:0.35,mountY:-0.48,threshold:500},
+];
+let config={chassis:{length:20,width:12,wheelbase:14},drive:"caster",sensors:JSON.parse(JSON.stringify(DEFAULT_SENSORS)),irSensors:JSON.parse(JSON.stringify(DEFAULT_IR))};
+let selectedSensor=null,selectedIr=null,currentTab="chassis",exportOpen=false,idCounter=100,dragId=null,dragType=null;
+const dk=window.matchMedia("(prefers-color-scheme:dark)").matches;
+
+async function loadConfig(){
+  if(window.electronAPI){const s=await window.electronAPI.loadConfig();if(s){if(!s.irSensors)s.irSensors=JSON.parse(JSON.stringify(DEFAULT_IR));config=s;}}
+  else{try{const s=localStorage.getItem("robot-config-v2");if(s){const p=JSON.parse(s);if(!p.irSensors)p.irSensors=JSON.parse(JSON.stringify(DEFAULT_IR));config=p;}}catch(e){}}
+  render();
+}
+async function saveConfig(){
+  let ok=false;
+  if(window.electronAPI)ok=await window.electronAPI.saveConfig(config);
+  else{try{localStorage.setItem("robot-config-v2",JSON.stringify(config));ok=true;}catch(e){}}
+  const btn=document.getElementById("btn-save");
+  if(ok){btn.textContent="Saved";btn.classList.add("accent");setTimeout(()=>{btn.textContent="Save";btn.classList.remove("accent");},1500);}
+}
+function resetAll(){config={chassis:{length:20,width:12,wheelbase:14},drive:"caster",sensors:JSON.parse(JSON.stringify(DEFAULT_SENSORS)),irSensors:JSON.parse(JSON.stringify(DEFAULT_IR))};selectedSensor=null;selectedIr=null;render();}
+function toggleExport(){exportOpen=!exportOpen;renderExport();}
+function switchTab(t){currentTab=t;document.querySelectorAll(".tab-btn").forEach(b=>b.classList.toggle("active",b.dataset.tab===t));renderControls();}
+function render(){drawSVG();renderControls();renderLegend();renderExport();}
+
+function drawSVG(){
+  const S=12,svgW=560,svgH=460,cx=svgW/2,cy=svgH/2;
+  const{length:L,width:W,wheelbase:WB}=config.chassis;
+  const rw=W*S,rh=L*S,rx=cx-rw/2,ry=cy-rh/2;
+  const wH=Math.min(28,rh*0.17),wW=9,wbPx=WB*S;
+  const rearY=cy+rh/2-(rh-wbPx)/2,frontY=rearY-wbPx;
+  const a=dk?"rgba(255,255,255,":"rgba(0,0,0,";
+  let s=`<defs><marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
+  <linearGradient id="cg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="${dk?'#3d4555':'#dce3ec'}"/><stop offset="50%" stop-color="${dk?'#353d4a':'#c8d2de'}"/><stop offset="100%" stop-color="${dk?'#2e3440':'#b8c4d2'}"/></linearGradient>
+  <linearGradient id="pg" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="${dk?'#1e3a2a':'#a8d4b8'}"/><stop offset="100%" stop-color="${dk?'#163025':'#88c49e'}"/></linearGradient>
+  <pattern id="pp" width="6" height="6" patternUnits="userSpaceOnUse"><circle cx="3" cy="3" r="0.4" fill="${dk?'rgba(120,210,160,0.18)':'rgba(30,100,50,0.1)'}"/></pattern>
+  <pattern id="cp" width="12" height="12" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="12" stroke="${a}0.02)" stroke-width="1"/></pattern></defs>`;
+  for(let i=0;i<=svgW/(S*2);i++)for(let j=0;j<=svgH/(S*2);j++)s+=`<circle cx="${i*S*2}" cy="${j*S*2}" r="0.6" fill="${a}0.05)"/>`;
+  s+=`<line x1="${cx}" y1="${ry-14}" x2="${cx}" y2="${ry-36}" stroke="${a}0.15)" stroke-width="1" marker-end="url(#arr)"/>`;
+  s+=`<text x="${cx}" y="${ry-42}" text-anchor="middle" font-size="8" fill="${a}0.2)" font-family="var(--font)" letter-spacing="0.12em" font-weight="600">FWD</text>`;
+  s+=`<rect x="${rx+1.5}" y="${ry+2.5}" width="${rw}" height="${rh}" rx="6" fill="${a}${dk?'0.25':'0.05'})"/>`;
+  s+=`<rect x="${rx}" y="${ry}" width="${rw}" height="${rh}" rx="6" fill="url(#cg)" stroke="${a}${dk?'0.1':'0.18'})" stroke-width="1"/>`;
+  s+=`<rect x="${rx}" y="${ry}" width="${rw}" height="${rh}" rx="6" fill="url(#cp)"/>`;
+  s+=`<rect x="${rx+3}" y="${ry+1}" width="${rw-6}" height="2.5" rx="1.2" fill="rgba(59,139,212,${dk?'0.35':'0.25'})"/>`;
+  s+=`<rect x="${rx+rw*0.3}" y="${ry+rh-3}" width="${rw*0.4}" height="2" rx="1" fill="rgba(216,90,48,${dk?'0.3':'0.2'})"/>`;
+  s+=`<rect x="${rx+rw*0.12}" y="${ry+rh*0.22}" width="${rw*0.76}" height="${rh*0.5}" rx="3" fill="url(#pg)" stroke="${dk?'rgba(100,200,140,0.15)':'rgba(40,120,70,0.18)'}" stroke-width="0.5"/>`;
+  s+=`<rect x="${rx+rw*0.12}" y="${ry+rh*0.22}" width="${rw*0.76}" height="${rh*0.5}" rx="3" fill="url(#pp)"/>`;
+  s+=`<rect x="${cx-12}" y="${cy-8}" width="24" height="16" rx="2" fill="${dk?'#151520':'#22222e'}" stroke="${dk?'rgba(150,150,180,0.15)':'rgba(100,100,130,0.2)'}" stroke-width="0.4"/>`;
+  [-7,-3,1,5].forEach(dy=>{s+=`<rect x="${cx-15}" y="${cy+dy}" width="3" height="1.5" rx="0.3" fill="${dk?'#666':'#aaa'}"/><rect x="${cx+12}" y="${cy+dy}" width="3" height="1.5" rx="0.3" fill="${dk?'#666':'#aaa'}"/>`;});
+  s+=`<circle cx="${cx-7}" cy="${cy-3}" r="1" fill="${dk?'#4a4a6a':'#8888aa'}"/>`;
+  s+=`<circle cx="${cx+rw*0.25}" cy="${ry+rh*0.3}" r="2" fill="${dk?'#33cc66':'#44dd77'}" opacity="0.6"/><circle cx="${cx+rw*0.25+8}" cy="${ry+rh*0.3}" r="2" fill="${dk?'#cc3333':'#ee5555'}" opacity="0.4"/>`;
+  [[rx+7,ry+7],[rx+rw-7,ry+7],[rx+7,ry+rh-7],[rx+rw-7,ry+rh-7]].forEach(([hx,hy])=>{s+=`<circle cx="${hx}" cy="${hy}" r="3.5" fill="${a}${dk?'0.3':'0.06'})"/><circle cx="${hx}" cy="${hy}" r="2" fill="none" stroke="${a}${dk?'0.06':'0.08'})" stroke-width="0.5"/>`;});
+  s+=`<line x1="${rx-16}" y1="${rearY}" x2="${rx+rw+16}" y2="${rearY}" stroke="${a}0.06)" stroke-width="0.5" stroke-dasharray="3 3"/>`;
+  s+=`<line x1="${rx-16}" y1="${frontY}" x2="${rx+rw+16}" y2="${frontY}" stroke="${a}0.06)" stroke-width="0.5" stroke-dasharray="3 3"/>`;
+  s+=`<g opacity="0.35">`;
+  s+=`<line x1="${rx}" y1="${ry+rh+16}" x2="${rx+rw}" y2="${ry+rh+16}" stroke="var(--tx3)" stroke-width="0.5"/><line x1="${rx}" y1="${ry+rh+12}" x2="${rx}" y2="${ry+rh+20}" stroke="var(--tx3)" stroke-width="0.5"/><line x1="${rx+rw}" y1="${ry+rh+12}" x2="${rx+rw}" y2="${ry+rh+20}" stroke="var(--tx3)" stroke-width="0.5"/>`;
+  s+=`<text x="${cx}" y="${ry+rh+28}" text-anchor="middle" font-size="9" fill="var(--tx3)" font-family="var(--font)">${W}cm</text>`;
+  s+=`<line x1="${rx-16}" y1="${ry}" x2="${rx-16}" y2="${ry+rh}" stroke="var(--tx3)" stroke-width="0.5"/><line x1="${rx-20}" y1="${ry}" x2="${rx-12}" y2="${ry}" stroke="var(--tx3)" stroke-width="0.5"/><line x1="${rx-20}" y1="${ry+rh}" x2="${rx-12}" y2="${ry+rh}" stroke="var(--tx3)" stroke-width="0.5"/>`;
+  s+=`<text x="${rx-22}" y="${cy+3}" text-anchor="end" font-size="9" fill="var(--tx3)" font-family="var(--font)">${L}cm</text>`;
+  s+=`<line x1="${rx+rw+20}" y1="${frontY}" x2="${rx+rw+20}" y2="${rearY}" stroke="var(--tx3)" stroke-width="0.5"/><line x1="${rx+rw+16}" y1="${frontY}" x2="${rx+rw+24}" y2="${frontY}" stroke="var(--tx3)" stroke-width="0.5"/><line x1="${rx+rw+16}" y1="${rearY}" x2="${rx+rw+24}" y2="${rearY}" stroke="var(--tx3)" stroke-width="0.5"/>`;
+  s+=`<text x="${rx+rw+28}" y="${(frontY+rearY)/2+3}" font-size="9" fill="var(--tx3)" font-family="var(--font)">${WB}cm</text></g>`;
+  const wheel=(x,y)=>{let w=`<rect x="${x}" y="${y-wH/2}" width="${wW}" height="${wH}" rx="2.5" fill="${dk?'#1a1a1a':'#2a2a2a'}" stroke="${a}${dk?'0.1':'0.15'})" stroke-width="0.5"/>`;for(let j=0;j<Math.max(1,Math.floor(wH/4));j++)w+=`<line x1="${x+1.5}" y1="${y-wH/2+3+j*4}" x2="${x+wW-1.5}" y2="${y-wH/2+3+j*4}" stroke="${dk?'rgba(255,255,255,0.07)':'rgba(255,255,255,0.15)'}" stroke-width="0.6"/>`;w+=`<circle cx="${x+wW/2}" cy="${y}" r="1.8" fill="${dk?'#555':'#999'}"/>`;return w;};
+  s+=wheel(rx-wW-3,rearY)+wheel(rx+rw+3,rearY);
+  if(config.drive==="caster"){const cr=Math.min(7,wH*0.38);s+=`<circle cx="${cx}" cy="${frontY}" r="${cr}" fill="none" stroke="${a}${dk?'0.18':'0.2'})" stroke-width="1.5"/><circle cx="${cx}" cy="${frontY}" r="2" fill="${dk?'#555':'#999'}"/>`;
+  }else{s+=wheel(rx-wW-3,frontY)+wheel(rx+rw+3,frontY);}
+
+  // Ultrasonic sensors
+  config.sensors.forEach((sensor,i)=>{
+    const col=COLORS[i%COLORS.length],sx=cx+sensor.mountX*rw,sy=cy+sensor.mountY*rh;
+    const angRad=(-sensor.angle+90)*Math.PI/180,rangePx=sensor.range*0.42,halfSweep=sensor.sweep*Math.PI/180;
+    const a1=angRad-halfSweep,a2=angRad+halfSweep;
+    const ex1=sx+Math.cos(a1)*rangePx,ey1=sy-Math.sin(a1)*rangePx,ex2=sx+Math.cos(a2)*rangePx,ey2=sy-Math.sin(a2)*rangePx;
+    const la=sensor.sweep*2>180?1:0,isSel=selectedSensor===sensor.id;
+    const lx=sx+Math.cos(angRad)*rangePx*0.48,ly=sy-Math.sin(angRad)*rangePx*0.48;
+    s+=`<path d="M${sx},${sy} L${ex1},${ey1} A${rangePx},${rangePx} 0 ${la},0 ${ex2},${ey2} Z" fill="${col}" fill-opacity="${isSel?0.15:0.05}" stroke="${col}" stroke-width="${isSel?0.8:0.4}" stroke-opacity="0.3"/>`;
+    s+=`<line x1="${sx}" y1="${sy}" x2="${sx+Math.cos(angRad)*rangePx}" y2="${sy-Math.sin(angRad)*rangePx}" stroke="${col}" stroke-width="0.4" stroke-dasharray="2 2" opacity="0.25"/>`;
+    if(isSel)s+=`<circle cx="${sx}" cy="${sy}" r="10" fill="${col}" fill-opacity="0.06"/>`;
+    s+=`<circle cx="${sx}" cy="${sy}" r="${isSel?5.5:4}" fill="${col}" stroke="white" stroke-width="${isSel?1.8:1}" class="sensor-handle" data-id="${sensor.id}" data-type="us" style="cursor:grab"/>`;
+    s+=`<text x="${lx}" y="${ly-5}" text-anchor="middle" font-size="8" fill="${col}" font-weight="600" font-family="var(--font)" opacity="0.7">${sensor.name}</text>`;
+  });
+
+  // IR sensors
+  config.irSensors.forEach((ir,i)=>{
+    const col=IR_COLORS[i%IR_COLORS.length],ix=cx+ir.mountX*rw,iy=cy+ir.mountY*rh;
+    const isSel=selectedIr===ir.id,sz=isSel?7:5.5;
+    s+=`<circle cx="${ix}" cy="${iy}" r="${isSel?14:10}" fill="${col}" fill-opacity="0.08" stroke="${col}" stroke-width="0.4" stroke-opacity="0.2" stroke-dasharray="2 1.5"/>`;
+    s+=`<rect x="${ix-sz}" y="${iy-sz}" width="${sz*2}" height="${sz*2}" rx="1.5" fill="${col}" stroke="white" stroke-width="${isSel?1.8:1}" transform="rotate(45 ${ix} ${iy})" class="sensor-handle" data-id="${ir.id}" data-type="ir" style="cursor:grab"/>`;
+    s+=`<line x1="${ix}" y1="${iy+2}" x2="${ix}" y2="${iy+sz+4}" stroke="white" stroke-width="1.2" opacity="0.7"/>`;
+    s+=`<text x="${ix}" y="${iy-sz-6}" text-anchor="middle" font-size="7.5" fill="${col}" font-weight="600" font-family="var(--font)" opacity="0.75">${ir.name}</text>`;
+  });
+
+  document.getElementById("robot-svg").innerHTML=s;
+  document.querySelectorAll(".sensor-handle").forEach(el=>{el.addEventListener("mousedown",startDrag);el.addEventListener("touchstart",startDrag,{passive:false});});
+}
+
+function startDrag(e){e.preventDefault();dragId=e.target.dataset.id;dragType=e.target.dataset.type;
+  if(dragType==="ir"){selectedIr=dragId;selectedSensor=null;}else{selectedSensor=dragId;selectedIr=null;}renderControls();renderLegend();}
+function onDragMove(e){
+  if(!dragId)return;const svg=document.getElementById("robot-svg"),pt=svg.createSVGPoint();
+  const touch=e.touches?e.touches[0]:e;pt.x=touch.clientX;pt.y=touch.clientY;
+  const svgP=pt.matrixTransform(svg.getScreenCTM().inverse()),S=12,cx=280,cy=230;
+  const rw=config.chassis.width*S,rh=config.chassis.length*S;
+  let mx=Math.max(-0.55,Math.min(0.55,Math.round(((svgP.x-cx)/rw)*100)/100));
+  let my=Math.max(-0.55,Math.min(0.55,Math.round(((svgP.y-cy)/rh)*100)/100));
+  if(dragType==="ir"){const ir=config.irSensors.find(s=>s.id===dragId);if(ir){ir.mountX=mx;ir.mountY=my;drawSVG();}}
+  else{const s=config.sensors.find(s=>s.id===dragId);if(s){s.mountX=mx;s.mountY=my;drawSVG();}}
+}
+function onDragEnd(){dragId=null;dragType=null;}
+document.addEventListener("mousemove",onDragMove);document.addEventListener("mouseup",onDragEnd);
+document.addEventListener("touchmove",onDragMove,{passive:false});document.addEventListener("touchend",onDragEnd);
+
+function renderControls(){
+  const el=document.getElementById("tab-content");
+  if(currentTab==="chassis"){
+    const{length:L,width:W,wheelbase:WB}=config.chassis;
+    el.innerHTML=`<div class="section-label">Dimensions</div>
+      ${slider("Length","cm",12,35,1,L,v=>{config.chassis.length=v;if(config.chassis.wheelbase>v-2)config.chassis.wheelbase=Math.max(4,v-2);render();})}
+      ${slider("Width","cm",8,22,1,W,v=>{config.chassis.width=v;render();})}
+      ${slider("Wheelbase","cm",4,L-2,1,WB,v=>{config.chassis.wheelbase=v;render();})}
+      <div class="section-label" style="margin-top:20px">Drive system</div>
+      ${DRIVES.map(d=>`<button class="drive-option ${config.drive===d.id?'active':''}" onclick="config.drive='${d.id}';render();">
+        <span class="radio-dot"><span class="radio-inner"></span></span>${d.label}</button>`).join("")}
+      <div class="specs-card"><div class="section-label" style="margin-bottom:8px">Specs</div>
+        <div class="specs-grid">
+          <span class="k">Area</span><span class="v">${L*W} cm²</span>
+          <span class="k">Ultrasonics</span><span class="v">${config.sensors.length}</span>
+          <span class="k">IR sensors</span><span class="v">${config.irSensors.length}</span>
+          <span class="k">Drive</span><span class="v">${config.drive}</span>
+          <span class="k">Turn ratio</span><span class="v">${(WB/W).toFixed(1)}</span>
+        </div></div>`;bindSliders(el);
+  }else if(currentTab==="sensors"){
+    el.innerHTML=`<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <div class="section-label" style="margin:0">${config.sensors.length} of 8 ultrasonic</div>
+      <button class="btn small" onclick="addSensor()" ${config.sensors.length>=8?'disabled':''}>+ Add</button></div>
+      ${config.sensors.map((s,i)=>{const col=COLORS[i%COLORS.length],isSel=selectedSensor===s.id;
+        return`<div class="sensor-item ${isSel?'active':''}" onclick="selectSensor('${s.id}')">
+          <div class="sensor-head"><span style="width:7px;height:7px;border-radius:50%;background:${col};flex-shrink:0"></span>
+            ${isSel?`<input class="sensor-name-input" type="text" value="${s.name}" onclick="event.stopPropagation()" oninput="updateSensorName('${s.id}',this.value)">`
+            :`<span class="sensor-name">${s.name}</span>`}
+            <span class="sensor-angle">${s.angle>0?'+':''}${s.angle}°</span></div>
+          ${isSel?`<div class="sensor-detail">
+            ${slider("Direction","°",-180,180,5,s.angle,v=>{s.angle=v;render();},"compact")}
+            ${slider("Sweep","°",5,60,5,s.sweep,v=>{s.sweep=v;render();},"compact")}
+            ${slider("Range","cm",20,400,10,s.range,v=>{s.range=v;render();},"compact")}
+            <button class="btn danger" onclick="event.stopPropagation();removeSensor('${s.id}')">Remove</button></div>`:''}</div>`;}).join("")}`;bindSliders(el);
+  }else if(currentTab==="ir"){
+    el.innerHTML=`<div class="ir-info" style="background:${dk?'rgba(232,160,48,0.06)':'rgba(232,160,48,0.04)'};border:0.5px solid ${dk?'rgba(232,160,48,0.12)':'rgba(232,160,48,0.1)'}">
+      <p style="color:${dk?'rgba(232,180,80,0.8)':'rgba(180,120,20,0.7)'};margin:0">TCRT5000 IR reflective sensors. Mount underneath chassis, pointing down. White line on black surface.</p></div>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <div class="section-label" style="margin:0">${config.irSensors.length} of 6 IR sensors</div>
+        <button class="btn small" onclick="addIr()" ${config.irSensors.length>=6?'disabled':''}>+ Add</button></div>
+      ${config.irSensors.map((s,i)=>{const col=IR_COLORS[i%IR_COLORS.length],isSel=selectedIr===s.id;
+        return`<div class="sensor-item ${isSel?'active':''}" onclick="selectIr('${s.id}')">
+          <div class="sensor-head"><span style="width:7px;height:7px;border-radius:1px;background:${col};flex-shrink:0;transform:rotate(45deg)"></span>
+            ${isSel?`<input class="sensor-name-input" type="text" value="${s.name}" onclick="event.stopPropagation()" oninput="updateIrName('${s.id}',this.value)">`
+            :`<span class="sensor-name">${s.name}</span>`}
+            <span class="sensor-angle">(${s.mountX.toFixed(2)}, ${s.mountY.toFixed(2)})</span></div>
+          ${isSel?`<div class="sensor-detail">
+            ${slider("Threshold","",100,900,10,s.threshold,v=>{s.threshold=v;render();},"compact")}
+            <div style="font-size:10px;color:var(--tx3);margin-bottom:6px">Drag the diamond on the blueprint to reposition</div>
+            <button class="btn danger" onclick="event.stopPropagation();removeIr('${s.id}')">Remove</button></div>`:''}</div>`;}).join("")}`;bindSliders(el);
+  }
+}
+
+function slider(label,unit,min,max,step,value,onChange,cls=""){
+  const id="sl_"+label.replace(/\s/g,"_")+"_"+Math.random().toString(36).slice(2,6);
+  window["_slCb_"+id]=onChange;
+  return`<div class="slider-row ${cls}"><span class="slider-label">${label}</span>
+    <input type="range" min="${min}" max="${max}" step="${step}" value="${value}" data-cb="_slCb_${id}" data-val-id="${id}">
+    <span class="slider-val" id="val_${id}">${value}${unit}</span></div>`;
+}
+function bindSliders(c){c.querySelectorAll('input[type=range][data-cb]').forEach(inp=>{const cb=inp.dataset.cb,vid=inp.dataset.valId;
+  const unit=document.getElementById("val_"+vid)?.textContent.replace(/[\d\-+]/g,"")||"";
+  inp.addEventListener("input",()=>{const v=+inp.value;const el=document.getElementById("val_"+vid);if(el)el.textContent=v+unit;if(window[cb])window[cb](v);});});}
+function renderLegend(){
+  let h="";
+  config.sensors.forEach((s,i)=>{const col=COLORS[i%COLORS.length],isSel=selectedSensor===s.id;
+    h+=`<button class="legend-pill ${isSel?'active':''}" style="color:${isSel?col:'var(--tx2)'};${isSel?'border-color:'+col+';background:'+col+'10':''}" onclick="selectSensor('${selectedSensor===s.id?'':s.id}')"><span style="width:5px;height:5px;border-radius:50%;background:${col}"></span>${s.name}</button>`;});
+  config.irSensors.forEach((s,i)=>{const col=IR_COLORS[i%IR_COLORS.length],isSel=selectedIr===s.id;
+    h+=`<button class="legend-pill ${isSel?'active':''}" style="color:${isSel?col:'var(--tx2)'};${isSel?'border-color:'+col+';background:'+col+'10':''}" onclick="selectIr('${selectedIr===s.id?'':s.id}')"><span style="width:5px;height:5px;border-radius:1px;background:${col};transform:rotate(45deg)"></span>${s.name}</button>`;});
+  document.getElementById("legend").innerHTML=h;
+}
+function renderExport(){const p=document.getElementById("export-panel");p.style.display=exportOpen?"":"none";if(exportOpen)document.getElementById("export-content").textContent=getYAML();}
+
+function selectSensor(id){selectedSensor=selectedSensor===id?null:id;selectedIr=null;render();}
+function selectIr(id){selectedIr=selectedIr===id?null:id;selectedSensor=null;render();}
+function addSensor(){if(config.sensors.length>=8)return;const s={id:"s"+(++idCounter),name:"Ultrasonic "+(config.sensors.length+1),mountX:0,mountY:0,angle:0,range:200,sweep:30};config.sensors.push(s);selectedSensor=s.id;selectedIr=null;render();}
+function removeSensor(id){config.sensors=config.sensors.filter(s=>s.id!==id);if(selectedSensor===id)selectedSensor=null;render();}
+function updateSensorName(id,n){const s=config.sensors.find(x=>x.id===id);if(s){s.name=n;renderLegend();drawSVG();}}
+function addIr(){if(config.irSensors.length>=6)return;const s={id:"ir"+(++idCounter),name:"IR "+(config.irSensors.length+1),mountX:0,mountY:-0.3,threshold:500};config.irSensors.push(s);selectedIr=s.id;selectedSensor=null;render();}
+function removeIr(id){config.irSensors=config.irSensors.filter(s=>s.id!==id);if(selectedIr===id)selectedIr=null;render();}
+function updateIrName(id,n){const s=config.irSensors.find(x=>x.id===id);if(s){s.name=n;renderLegend();drawSVG();}}
+
+function getYAML(){
+  const c=config;
+  const sL=c.sensors.map(s=>`    - name: "${s.name}"\n      mount: [${s.mountX.toFixed(2)}, ${s.mountY.toFixed(2)}]\n      angle: ${s.angle}\n      range: ${s.range}\n      sweep: ${s.sweep}`).join("\n");
+  const irL=c.irSensors.map(s=>`    - name: "${s.name}"\n      mount: [${s.mountX.toFixed(2)}, ${s.mountY.toFixed(2)}]\n      threshold: ${s.threshold}`).join("\n");
+  return`robot:\n  chassis:\n    length_cm: ${c.chassis.length}\n    width_cm: ${c.chassis.width}\n    wheelbase_cm: ${c.chassis.wheelbase}\n  drive_type: "${c.drive}"\n  sensors:\n${sL}\n  ir_sensors:\n${irL}\n`;
+}
+function copyExport(t){navigator.clipboard.writeText(t==="yaml"?getYAML():JSON.stringify(config,null,2));}
+async function saveExportFile(){if(window.electronAPI)await window.electronAPI.exportFile(getYAML(),"robot-config.yaml");
+  else{const b=new Blob([getYAML()],{type:"text/yaml"}),a=document.createElement("a");a.href=URL.createObjectURL(b);a.download="robot-config.yaml";a.click();}}
+loadConfig();
+</script>
+</body>
+</html>
