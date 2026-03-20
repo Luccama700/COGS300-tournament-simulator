@@ -32,6 +32,9 @@ robot-configurator-app/out/
 .DS_Store
 .AppleDouble
 
+# Generated training data (regenerate with generate_line_data.py)
+data/
+
 # Calibration output (generated data, not source)
 calibration/data/
 calibration/*.csv

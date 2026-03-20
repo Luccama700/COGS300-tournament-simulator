@@ -155,7 +155,7 @@ class TrackEditor:
         best_sq = r_cm * r_cm
         best = None
         for wall in self.track.walls:
-            for vx, vy in [(wall.x1, wall.y1), (wall.x2, wall.y2)]:
+            for vx, vy in [(wall[0], wall[1]), (wall[2], wall[3])]:
                 d = (wx-vx)**2 + (wy-vy)**2
                 if d < best_sq:
                     best_sq, best = d, (vx, vy)
@@ -183,7 +183,7 @@ class TrackEditor:
 
     def _push_undo(self):
         self.undo_stack.append((
-            [Wall(w.x1, w.y1, w.x2, w.y2) for w in self.track.walls],
+            [list(w) for w in self.track.walls],
             [TrackLine(t.x1, t.y1, t.x2, t.y2, t.width_cm) for t in self.track.line_paths],
             (self.track.start_x, self.track.start_y, self.track.start_heading),
             (self.track.goal_x,  self.track.goal_y),
@@ -206,7 +206,7 @@ class TrackEditor:
         best_d = threshold
         best   = None
         for i, w in enumerate(self.track.walls):
-            d = _dist_to_seg(wx, wy, w.x1, w.y1, w.x2, w.y2)
+            d = _dist_to_seg(wx, wy, w[0], w[1], w[2], w[3])
             if d < best_d:
                 best_d, best = d, ("wall", i)
         for i, tl in enumerate(self.track.line_paths):
@@ -314,6 +314,18 @@ class TrackEditor:
 
             # ── Draw ────────────────────────────────────────────────────────
             if self.mode == "edit":
+                # WASD pan (80 cm/s in world space, scaled to screen pixels)
+                pan_keys = pygame.key.get_pressed()
+                pan_speed_px = 80.0 * self.ppcm * dt
+                if pan_keys[pygame.K_w] or pan_keys[pygame.K_UP]:
+                    self.cam_y += pan_speed_px
+                if pan_keys[pygame.K_s] or pan_keys[pygame.K_DOWN]:
+                    self.cam_y -= pan_speed_px
+                if pan_keys[pygame.K_a] or pan_keys[pygame.K_LEFT]:
+                    self.cam_x += pan_speed_px
+                if pan_keys[pygame.K_d] or pan_keys[pygame.K_RIGHT]:
+                    self.cam_x -= pan_speed_px
+
                 # Snapped world coords of current mouse position
                 mx, my = self._snapped(mx_raw, my_raw)
                 self._draw_edit(screen, mx, my)
@@ -542,8 +554,8 @@ class TrackEditor:
         w_px = max(2, int(self.ppcm * 0.8))
         for i, wall in enumerate(self.track.walls):
             color = HIGHLIGHT_COLOR if self.hover_elem == ("wall", i) else WALL_COLOR
-            p1 = self._w2s(wall.x1, wall.y1)
-            p2 = self._w2s(wall.x2, wall.y2)
+            p1 = self._w2s(wall[0], wall[1])
+            p2 = self._w2s(wall[2], wall[3])
             pygame.draw.line(surface, color, p1, p2, w_px)
             pygame.draw.circle(surface, color, p1, max(2, w_px // 2))
             pygame.draw.circle(surface, color, p2, max(2, w_px // 2))
@@ -641,7 +653,8 @@ class TrackEditor:
             ("LClick=Wall  Shift+LClick=Line poly",          (105, 105, 100), False),
             ("RClick=Cancel/Finish  Del=Delete mode",        (105, 105, 100), False),
             ("P=Start  E=Goal  Z=Undo  G=Snap",              (105, 105, 100), False),
-            ("S=Save  L=Load  Tab=Drive  Scroll/MMB=View",   (105, 105, 100), False),
+            ("WASD=Pan view  Scroll/MMB=Zoom+Pan",           (105, 105, 100), False),
+            ("S=Save  L=Load  Tab=Drive",                    (105, 105, 100), False),
         ]
         if self.status_timer > 0:
             rows.append((self.status_msg, (95, 210, 95), False))
