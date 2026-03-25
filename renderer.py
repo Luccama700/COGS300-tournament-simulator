@@ -235,10 +235,14 @@ class Renderer:
             pygame.draw.polygon(surface, (180, 180, 175), pts, 1)
 
     def _draw_hud(self, surface: pygame.Surface, state: RobotState):
+        from physics import COMMAND_NAMES
         hud_x, hud_y = 12, 12
+        cmd_name = COMMAND_NAMES.get(state.command, "?")
         lines = [
             f"Pos: ({state.x:.1f}, {state.y:.1f})  Heading: {state.heading:.1f}°",
-            f"Speed: {state.speed:.1f} cm/s  Turn: {state.turn_rate:.1f}°/s",
+            f"Speed: {state.speed:.1f} cm/s   Cmd: {state.command} {cmd_name}",
+            f"Motors  L: {state.left_pwm:+4d} PWM ({state.left_wheel_speed:+5.1f} cm/s)"
+            f"   R: {state.right_pwm:+4d} PWM ({state.right_wheel_speed:+5.1f} cm/s)",
         ]
         if state.sensor_readings:
             names = [s.name for s in self.robot_cfg.sensors]
@@ -259,6 +263,6 @@ class Renderer:
         surface.blit(hud_surface, (hud_x, hud_y))
 
         for i, line in enumerate(lines):
-            color = (200, 200, 195) if i < 3 else (140, 140, 135)
+            color = (200, 200, 195) if i < 5 else (140, 140, 135)
             text = self.font.render(line, True, color)
             surface.blit(text, (hud_x + 10, hud_y + 6 + i * 18))

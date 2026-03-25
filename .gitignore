@@ -39,6 +39,5 @@ data/
 calibration/data/
 calibration/*.csv
 
-# Saved tracks — teammates can create their own
-# (remove this line if you want to commit a default track)
+# Legacy single-file track (superseded by configs/tracks/)
 configs/track.yaml

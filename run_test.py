@@ -185,21 +185,25 @@ def main():
                 renderer.w = event.w
                 renderer.h = event.h
 
-        keys     = pygame.key.get_pressed()
-        throttle = 0.0
-        steering = 0.0
-        if keys[pygame.K_w] or keys[pygame.K_UP]:
-            throttle =  1.0
-        elif keys[pygame.K_s] or keys[pygame.K_DOWN]:
-            throttle = -1.0
-        if keys[pygame.K_a] or keys[pygame.K_LEFT]:
-            steering =  1.0
-        elif keys[pygame.K_d] or keys[pygame.K_RIGHT]:
-            steering = -1.0
-        if throttle != 0 and steering != 0:
-            throttle *= 0.85
+        # Map keys to Arduino command IDs (0-5), matching executeCommand() in firmware
+        keys = pygame.key.get_pressed()
+        w = keys[pygame.K_w] or keys[pygame.K_UP]
+        a = keys[pygame.K_a] or keys[pygame.K_LEFT]
+        d = keys[pygame.K_d] or keys[pygame.K_RIGHT]
+        if w and a:
+            cmd = 1  # slight left
+        elif w and d:
+            cmd = 2  # slight right
+        elif a:
+            cmd = 3  # hard left (spin)
+        elif d:
+            cmd = 4  # hard right (spin)
+        elif w:
+            cmd = 0  # forward
+        else:
+            cmd = 5  # stop
 
-        engine.step(state, throttle, steering, dt)
+        engine.step(state, cmd, dt)
         renderer.draw(screen, state, walls, follow=follow_cam, track_lines=track_lines)
         pygame.display.flip()
 

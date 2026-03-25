@@ -2,17 +2,10 @@
 # These are INDEPENDENT of the robot geometry config (robot-config.yaml).
 
 physics:
-  # Movement
-  max_speed: 80.0            # cm/s — top forward speed
-  min_speed: -40.0           # cm/s — max reverse speed
-  acceleration: 120.0        # cm/s² — how fast it gets to max speed
-  deceleration: 200.0        # cm/s² — how fast it stops (friction/braking)
-  idle_deceleration: 60.0    # cm/s² — coast-down when no input
-
-  # Turning (differential drive — 2WD + caster)
-  max_turn_rate: 180.0       # degrees/s — max rotation speed
-  turn_acceleration: 360.0   # degrees/s² — how fast turn rate ramps up
-  turn_deceleration: 540.0   # degrees/s² — how fast turning stops
+  # Motor model — matches Arduino firmware (robot_firmware.ino)
+  # BASE_SPEED=150 PWM → ~35 cm/s; adjust max_wheel_speed_cmps to calibrate
+  max_wheel_speed_cmps: 60.0  # cm/s at PWM=255 (tune to match real robot)
+  motor_tau: 0.08             # motor inertia time constant in seconds
 
   # Collision
   wall_bounce: 0.2           # velocity multiplier on wall hit (0=dead stop, 1=full bounce)

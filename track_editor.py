@@ -30,6 +30,8 @@ Drive-mode controls
 """
 
 import math
+import re
+from pathlib import Path
 import pygame
 
 from physics import Wall, PhysicsEngine, RobotState
@@ -38,6 +40,15 @@ from ir_model import TrackLine
 from robot_config import RobotConfig
 from physics import PhysicsParams
 from track import TrackData, load_track, save_track
+
+TRACKS_DIR = Path("configs/tracks")
+
+
+def _wall_coords(w) -> tuple[float, float, float, float]:
+    """Return (x1,y1,x2,y2) from either a Wall object or a [x1,y1,x2,y2] list."""
+    if isinstance(w, (list, tuple)):
+        return w[0], w[1], w[2], w[3]
+    return w.x1, w.y1, w.x2, w.y2
 
 
 # ── Colours ────────────────────────────────────────────────────────────────
@@ -155,7 +166,8 @@ class TrackEditor:
         best_sq = r_cm * r_cm
         best = None
         for wall in self.track.walls:
-            for vx, vy in [(wall[0], wall[1]), (wall[2], wall[3])]:
+            wx1, wy1, wx2, wy2 = _wall_coords(wall)
+            for vx, vy in [(wx1, wy1), (wx2, wy2)]:
                 d = (wx-vx)**2 + (wy-vy)**2
                 if d < best_sq:
                     best_sq, best = d, (vx, vy)
@@ -183,7 +195,7 @@ class TrackEditor:
 
     def _push_undo(self):
         self.undo_stack.append((
-            [list(w) for w in self.track.walls],
+            [list(_wall_coords(w)) for w in self.track.walls],
             [TrackLine(t.x1, t.y1, t.x2, t.y2, t.width_cm) for t in self.track.line_paths],
             (self.track.start_x, self.track.start_y, self.track.start_heading),
             (self.track.goal_x,  self.track.goal_y),
@@ -206,7 +218,7 @@ class TrackEditor:
         best_d = threshold
         best   = None
         for i, w in enumerate(self.track.walls):
-            d = _dist_to_seg(wx, wy, w[0], w[1], w[2], w[3])
+            d = _dist_to_seg(wx, wy, *_wall_coords(w))
             if d < best_d:
                 best_d, best = d, ("wall", i)
         for i, tl in enumerate(self.track.line_paths):
@@ -218,9 +230,11 @@ class TrackEditor:
     # ── Mode switching ──────────────────────────────────────────────────────
 
     def _enter_drive(self):
+        # Convert walls: TrackData stores them as [x1,y1,x2,y2] lists; PhysicsEngine needs Wall objects
+        walls = [Wall(*w) if isinstance(w, list) else w for w in self.track.walls]
         self.engine = PhysicsEngine(
             self.robot_cfg, self.physics_params,
-            self.track.walls,
+            walls,
             noise_profile=self.noise_profile,
             track_lines=self.track.line_paths,
         )
@@ -253,29 +267,292 @@ class TrackEditor:
 
     # ── Save / load ─────────────────────────────────────────────────────────
 
+    def _safe_name(self, name: str) -> str:
+        """Convert a track name to a safe folder/file prefix."""
+        s = re.sub(r"[^\w ]", "", name).strip().replace(" ", "_")
+        return s or "track"
+
     def _save(self):
+        # Prompt for name if this track hasn't been named yet
+        name = self.track.name
+        if not name or name == "Unnamed":
+            name = self._run_name_dialog()
+            if name is None:
+                return   # user cancelled
+            self.track.name = name
+
+        safe = self._safe_name(name)
+        folder = TRACKS_DIR / safe
+        folder.mkdir(parents=True, exist_ok=True)
+
+        # Find next version number
+        existing = sorted(folder.glob(f"{safe}_v*.yaml"))
+        n = len(existing) + 1
+        path = folder / f"{safe}_v{n:02d}.yaml"
+
         try:
-            save_track(self.track, self.track_path)
-            self._status(f"Saved → {self.track_path}")
+            save_track(self.track, path)
+            self.track_path = str(path)
+            self._status(f"Saved v{n:02d} → {safe}/")
         except Exception as exc:
             self._status(f"Save failed: {exc}")
 
     def _load(self):
+        path = self._run_load_picker()
+        if path is None:
+            return
         try:
-            self.track       = load_track(self.track_path)
+            self.track       = load_track(path)
+            self.track_path  = str(path)
             self.undo_stack  = []
             self.wall_start  = None
             self.line_points = []
-            self._status(f"Loaded {self.track_path}")
-        except FileNotFoundError:
-            self._status(f"Not found: {self.track_path}")
+            self._status(f"Loaded {Path(path).name}")
         except Exception as exc:
             self._status(f"Load failed: {exc}")
 
     def load_track_file(self, path: str):
         """Load a track from a specific path (called from run_test.py)."""
-        self.track_path = path
-        self._load()
+        try:
+            self.track       = load_track(path)
+            self.track_path  = path
+            self.undo_stack  = []
+            self.wall_start  = None
+            self.line_points = []
+            self._status(f"Loaded {Path(path).name}")
+        except Exception as exc:
+            self._status(f"Load failed: {exc}")
+
+    # ── Blocking dialog helpers ──────────────────────────────────────────────
+
+    def _run_name_dialog(self) -> str | None:
+        """
+        Blocking mini-loop: shows a text-input overlay, returns the name
+        the user typed or None if they cancelled.
+        """
+        screen  = self._screen
+        font_lg = pygame.font.SysFont("menlo", 16, bold=True)
+        font_sm = pygame.font.SysFont("menlo", 13)
+        clock   = pygame.time.Clock()
+
+        text   = ""
+        bg     = screen.copy()   # freeze current frame as backdrop
+
+        BOX_W, BOX_H = 420, 130
+        bx = (self.w - BOX_W) // 2
+        by = (self.h - BOX_H) // 2
+
+        pygame.key.set_repeat(400, 40)
+
+        while True:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    pygame.key.set_repeat(0)
+                    return None
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_RETURN and text.strip():
+                        pygame.key.set_repeat(0)
+                        return text.strip()
+                    elif event.key == pygame.K_ESCAPE:
+                        pygame.key.set_repeat(0)
+                        return None
+                    elif event.key == pygame.K_BACKSPACE:
+                        text = text[:-1]
+                    elif event.unicode and event.unicode.isprintable():
+                        if len(text) < 40:
+                            text += event.unicode
+
+            # Draw backdrop + modal
+            screen.blit(bg, (0, 0))
+            overlay = pygame.Surface((self.w, self.h), pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 140))
+            screen.blit(overlay, (0, 0))
+
+            pygame.draw.rect(screen, (30, 32, 38),   (bx, by, BOX_W, BOX_H), border_radius=10)
+            pygame.draw.rect(screen, (70, 75, 90),   (bx, by, BOX_W, BOX_H), 1, border_radius=10)
+
+            screen.blit(font_lg.render("Name this track", True, (210, 215, 225)),
+                        (bx + 18, by + 16))
+
+            # Input field
+            field_y = by + 52
+            pygame.draw.rect(screen, (20, 22, 28),   (bx + 18, field_y, BOX_W - 36, 34), border_radius=5)
+            pygame.draw.rect(screen, (90, 120, 180), (bx + 18, field_y, BOX_W - 36, 34), 1, border_radius=5)
+            display = text + ("|" if (pygame.time.get_ticks() // 500) % 2 == 0 else "")
+            screen.blit(font_sm.render(display, True, (220, 220, 215)),
+                        (bx + 26, field_y + 9))
+
+            hint = font_sm.render("Enter to confirm  ·  Esc to cancel", True, (100, 105, 115))
+            screen.blit(hint, (bx + 18, by + BOX_H - 24))
+
+            pygame.display.flip()
+            clock.tick(60)
+
+    def _run_load_picker(self) -> str | None:
+        """
+        Blocking mini-loop: scans configs/tracks/ and shows a pick list.
+        Returns a YAML path string or None if cancelled.
+        """
+        screen  = self._screen
+        font_hd = pygame.font.SysFont("menlo", 14, bold=True)
+        font_tr = pygame.font.SysFont("menlo", 13, bold=True)
+        font_sm = pygame.font.SysFont("menlo", 12)
+        clock   = pygame.time.Clock()
+        bg      = screen.copy()
+
+        # ── Collect tracks ───────────────────────────────────────────────────
+        # Each entry: (display_label, path_string)
+        entries: list[tuple[str, str]] = []
+
+        if TRACKS_DIR.exists():
+            for folder in sorted(TRACKS_DIR.iterdir()):
+                if not folder.is_dir():
+                    continue
+                versions = sorted(folder.glob("*.yaml"), reverse=True)  # newest first
+                for v in versions:
+                    # e.g. "tournament_v03.yaml" → "tournament  v03"
+                    label = f"  {folder.name}  /  {v.stem}"
+                    entries.append((label, str(v)))
+                if versions:
+                    # blank separator between track groups
+                    entries.append(("", ""))
+
+        # Legacy single-file fallback
+        legacy = Path("configs/track.yaml")
+        if legacy.exists():
+            entries.insert(0, ("[legacy] configs/track.yaml", str(legacy)))
+            entries.insert(1, ("", ""))
+
+        if not entries or all(p == "" for _, p in entries):
+            self._status("No saved tracks found — draw something and press S first")
+            return None
+
+        # ── Picker layout ───────────────────────────────────────────────────
+        PANEL_W  = 520
+        ROW_H    = 26
+        PADDING  = 16
+        visible_rows = min(16, sum(1 for _, p in entries if p))
+        PANEL_H  = PADDING * 2 + 36 + visible_rows * ROW_H + 30
+        PANEL_H  = min(PANEL_H, self.h - 80)
+        px = (self.w - PANEL_W) // 2
+        py = (self.h - PANEL_H) // 2
+
+        scroll    = 0
+        selected  = None      # index into entries
+
+        # Find first real entry as default selection
+        for i, (_, p) in enumerate(entries):
+            if p:
+                selected = i
+                break
+
+        MAX_VISIBLE = (PANEL_H - PADDING * 2 - 36 - 30) // ROW_H
+
+        while True:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    return None
+
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        return None
+                    elif event.key == pygame.K_RETURN and selected is not None:
+                        _, p = entries[selected]
+                        if p:
+                            return p
+                    elif event.key == pygame.K_UP:
+                        for i in range((selected or 1) - 1, -1, -1):
+                            if entries[i][1]:
+                                selected = i
+                                scroll = min(scroll, selected)
+                                break
+                    elif event.key == pygame.K_DOWN:
+                        for i in range((selected or -1) + 1, len(entries)):
+                            if entries[i][1]:
+                                selected = i
+                                if selected - scroll >= MAX_VISIBLE:
+                                    scroll = selected - MAX_VISIBLE + 1
+                                break
+
+                if event.type == pygame.MOUSEBUTTONDOWN:
+                    mx, my = event.pos
+                    list_top = py + PADDING + 36
+                    for row in range(MAX_VISIBLE):
+                        idx = scroll + row
+                        if idx >= len(entries):
+                            break
+                        label, path = entries[idx]
+                        if not path:
+                            continue
+                        ry = list_top + row * ROW_H
+                        if px + PADDING <= mx <= px + PANEL_W - PADDING and ry <= my <= ry + ROW_H:
+                            if selected == idx and event.button == 1:
+                                return path   # double-click style (second click confirms)
+                            selected = idx
+
+                if event.type == pygame.MOUSEWHEEL:
+                    scroll = max(0, min(scroll - event.y,
+                                        len(entries) - MAX_VISIBLE))
+
+            # ── Draw ────────────────────────────────────────────────────────
+            screen.blit(bg, (0, 0))
+            overlay = pygame.Surface((self.w, self.h), pygame.SRCALPHA)
+            overlay.fill((0, 0, 0, 150))
+            screen.blit(overlay, (0, 0))
+
+            pygame.draw.rect(screen, (28, 30, 36),  (px, py, PANEL_W, PANEL_H), border_radius=10)
+            pygame.draw.rect(screen, (65, 70, 88),  (px, py, PANEL_W, PANEL_H), 1, border_radius=10)
+
+            screen.blit(font_hd.render("Load Track", True, (210, 215, 230)),
+                        (px + PADDING, py + PADDING))
+            screen.blit(font_sm.render("↑↓ or click to select  ·  Enter/click again to load  ·  Esc to cancel",
+                                        True, (90, 95, 110)),
+                        (px + PADDING, py + PADDING + 20))
+
+            list_top = py + PADDING + 42
+            for row in range(MAX_VISIBLE):
+                idx = scroll + row
+                if idx >= len(entries):
+                    break
+                label, path = entries[idx]
+                ry = list_top + row * ROW_H
+
+                if not path:
+                    # group separator
+                    pygame.draw.line(screen, (50, 54, 65),
+                                     (px + PADDING, ry + ROW_H // 2),
+                                     (px + PANEL_W - PADDING, ry + ROW_H // 2), 1)
+                    continue
+
+                is_sel = (idx == selected)
+                if is_sel:
+                    pygame.draw.rect(screen, (45, 90, 150),
+                                     (px + PADDING, ry, PANEL_W - PADDING * 2, ROW_H - 2),
+                                     border_radius=4)
+
+                # Track folder name (bold) vs version part
+                parts = label.split("  /  ")
+                if len(parts) == 2:
+                    tw = font_tr.size(parts[0] + "  /  ")[0]
+                    screen.blit(font_tr.render(parts[0] + "  /  ", True,
+                                               (220, 220, 215) if is_sel else (170, 175, 185)),
+                                (px + PADDING + 6, ry + 5))
+                    screen.blit(font_sm.render(parts[1], True,
+                                               (160, 200, 255) if is_sel else (120, 140, 170)),
+                                (px + PADDING + 6 + tw, ry + 7))
+                else:
+                    screen.blit(font_sm.render(label, True,
+                                               (220, 220, 215) if is_sel else (150, 155, 165)),
+                                (px + PADDING + 6, ry + 6))
+
+            # Scroll indicator
+            if len(entries) > MAX_VISIBLE:
+                hint = f"↑↓  {scroll + 1}–{min(scroll + MAX_VISIBLE, len(entries))} / {len(entries)}"
+                screen.blit(font_sm.render(hint, True, (80, 85, 100)),
+                            (px + PADDING, py + PANEL_H - 22))
+
+            pygame.display.flip()
+            clock.tick(60)
 
     def _status(self, msg: str, duration: float = 3.0):
         self.status_msg   = msg
@@ -284,6 +561,7 @@ class TrackEditor:
     # ── Main loop ───────────────────────────────────────────────────────────
 
     def run(self, screen: pygame.Surface, clock: pygame.time.Clock):
+        self._screen = screen
         fps     = self.display_cfg.get("fps", 60)
         running = True
 
@@ -331,23 +609,29 @@ class TrackEditor:
                 self._draw_edit(screen, mx, my)
 
             else:
-                keys     = pygame.key.get_pressed()
-                throttle = 0.0
-                steering = 0.0
-                if keys[pygame.K_w] or keys[pygame.K_UP]:
-                    throttle =  1.0
-                elif keys[pygame.K_s] or keys[pygame.K_DOWN]:
-                    throttle = -1.0
-                if keys[pygame.K_a] or keys[pygame.K_LEFT]:
-                    steering =  1.0
-                elif keys[pygame.K_d] or keys[pygame.K_RIGHT]:
-                    steering = -1.0
-                if throttle != 0 and steering != 0:
-                    throttle *= 0.85
+                # Map keys to Arduino serial-monitor command IDs (0-5)
+                # Matches executeCommand() in robot_firmware.ino
+                keys = pygame.key.get_pressed()
+                w = keys[pygame.K_w] or keys[pygame.K_UP]
+                a = keys[pygame.K_a] or keys[pygame.K_LEFT]
+                d = keys[pygame.K_d] or keys[pygame.K_RIGHT]
+                if w and a:
+                    cmd = 1  # slight left
+                elif w and d:
+                    cmd = 2  # slight right
+                elif a:
+                    cmd = 3  # hard left (spin)
+                elif d:
+                    cmd = 4  # hard right (spin)
+                elif w:
+                    cmd = 0  # forward
+                else:
+                    cmd = 5  # stop
 
-                self.engine.step(self.drive_state, throttle, steering, dt)
+                self.engine.step(self.drive_state, cmd, dt)
+                walls = [Wall(*w) if isinstance(w, list) else w for w in self.track.walls]
                 self.renderer.draw(
-                    screen, self.drive_state, self.track.walls,
+                    screen, self.drive_state, walls,
                     follow=self.follow_cam,
                     track_lines=self.track.line_paths,
                 )
@@ -554,8 +838,9 @@ class TrackEditor:
         w_px = max(2, int(self.ppcm * 0.8))
         for i, wall in enumerate(self.track.walls):
             color = HIGHLIGHT_COLOR if self.hover_elem == ("wall", i) else WALL_COLOR
-            p1 = self._w2s(wall[0], wall[1])
-            p2 = self._w2s(wall[2], wall[3])
+            wx1, wy1, wx2, wy2 = _wall_coords(wall)
+            p1 = self._w2s(wx1, wy1)
+            p2 = self._w2s(wx2, wy2)
             pygame.draw.line(surface, color, p1, p2, w_px)
             pygame.draw.circle(surface, color, p1, max(2, w_px // 2))
             pygame.draw.circle(surface, color, p2, max(2, w_px // 2))
@@ -654,7 +939,7 @@ class TrackEditor:
             ("RClick=Cancel/Finish  Del=Delete mode",        (105, 105, 100), False),
             ("P=Start  E=Goal  Z=Undo  G=Snap",              (105, 105, 100), False),
             ("WASD=Pan view  Scroll/MMB=Zoom+Pan",           (105, 105, 100), False),
-            ("S=Save  L=Load  Tab=Drive",                    (105, 105, 100), False),
+            ("S=Save new version  L=Load picker  Tab=Drive", (105, 105, 100), False),
         ]
         if self.status_timer > 0:
             rows.append((self.status_msg, (95, 210, 95), False))

@@ -9,8 +9,8 @@ import csv
 from pathlib import Path
 
 
-# Columns that are never model inputs
-_SKIP_COLS = {"episode_id"}
+# Columns that are never model inputs (outputs/metadata — not available at inference time)
+_SKIP_COLS = {"throttle", "steering", "episode_id"}
 
 # Label column
 _LABEL_COL = "command_label"

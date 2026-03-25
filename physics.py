@@ -9,35 +9,54 @@ Handles:
 """
 
 import math
-import random
 from dataclasses import dataclass, field
 import numpy as np
 import yaml
-from robot_config import RobotConfig, SensorConfig
-from sensor_model import SensorSimulator, SensorNoiseProfile, HC_SR04_DEFAULT, load_noise_profile
+from robot_config import RobotConfig
+from sensor_model import SensorSimulator, SensorNoiseProfile, HC_SR04_DEFAULT
 from ir_model import IRSensorSimulator, TrackLine
 
 
 @dataclass
 class PhysicsParams:
+    # Motor model (matching Arduino firmware)
+    max_wheel_speed_cmps: float = 60.0  # cm/s at PWM=255; BASE_SPEED=150 → ~35 cm/s
+    motor_tau: float = 0.08             # motor inertia time constant (seconds)
+
+    # Collision
+    wall_bounce: float = 0.2
+    wall_slide_friction: float = 0.5
+    collision_margin: float = 1.0
+
+    # Sensor noise (HC-SR04 simulation)
+    sensor_noise_std: float = 2.0
+    sensor_dropout_chance: float = 0.02
+    sensor_dropout_value: float = 0.0
+    sensor_min_range: float = 2.0
+
+    # Legacy fields kept so old YAML files don't break on load
     max_speed: float = 80.0
     min_speed: float = -40.0
     acceleration: float = 120.0
     deceleration: float = 200.0
     idle_deceleration: float = 60.0
-
     max_turn_rate: float = 180.0
     turn_acceleration: float = 360.0
     turn_deceleration: float = 540.0
 
-    wall_bounce: float = 0.2
-    wall_slide_friction: float = 0.5
-    collision_margin: float = 1.0
 
-    sensor_noise_std: float = 2.0
-    sensor_dropout_chance: float = 0.02
-    sensor_dropout_value: float = 0.0
-    sensor_min_range: float = 2.0
+# Arduino firmware motor command table (mirrors executeCommand() in robot_firmware.ino)
+_BASE_PWM = 150  # BASE_SPEED in firmware
+MOTOR_COMMANDS: dict[int, tuple[int, int]] = {
+    0: ( _BASE_PWM,                  _BASE_PWM),           # forward
+    1: (int(_BASE_PWM * 0.6),        _BASE_PWM),           # slight left
+    2: ( _BASE_PWM,                  int(_BASE_PWM * 0.6)),# slight right
+    3: (-int(_BASE_PWM * 0.3),       _BASE_PWM),           # hard left
+    4: ( _BASE_PWM,                  -int(_BASE_PWM * 0.3)),# hard right
+    5: (0,                           0),                    # stop
+}
+COMMAND_NAMES = {0: "FORWARD", 1: "SLIGHT LEFT", 2: "SLIGHT RIGHT",
+                 3: "HARD LEFT", 4: "HARD RIGHT", 5: "STOP"}
 
 
 def load_physics_params(path: str) -> tuple[PhysicsParams, dict]:
@@ -76,8 +95,16 @@ class RobotState:
     x: float = 0.0           # world position cm
     y: float = 0.0
     heading: float = 90.0    # degrees, 0=east, 90=north (screen up)
-    speed: float = 0.0       # cm/s (forward positive)
-    turn_rate: float = 0.0   # degrees/s (positive = counter-clockwise)
+    speed: float = 0.0       # cm/s — center speed (derived from wheel speeds)
+
+    # Per-wheel state (mirrors Arduino L298N + encoder model)
+    left_pwm:  int   = 0     # commanded PWM (-255 to 255)
+    right_pwm: int   = 0
+    left_wheel_speed:  float = 0.0  # actual wheel speed cm/s (lagged by inertia)
+    right_wheel_speed: float = 0.0
+
+    # Current command (0-5, matches Arduino executeCommand() IDs)
+    command: int = 5  # start stopped
 
     # Current sensor readings (updated by physics step)
     sensor_readings: list[float] = field(default_factory=list)
@@ -105,71 +132,46 @@ class PhysicsEngine:
         self._wall_starts = np.array([[w.x1, w.y1] for w in walls], dtype=np.float64)
         self._wall_ends = np.array([[w.x2, w.y2] for w in walls], dtype=np.float64)
 
-    def step(self, state: RobotState, throttle: float, steering: float, dt: float) -> RobotState:
+    def step(self, state: RobotState, command: int, dt: float) -> RobotState:
         """
-        Advance physics by dt seconds.
+        Advance physics by dt seconds using Arduino motor commands.
 
-        throttle: -1.0 (full reverse) to 1.0 (full forward)
-        steering: -1.0 (hard right) to 1.0 (hard left)
+        command: integer 0-5 matching Arduino executeCommand() IDs:
+            0 = forward, 1 = slight left, 2 = slight right,
+            3 = hard left, 4 = hard right, 5 = stop
 
-        Returns updated state (mutates in place for performance).
+        Replicates the exact differential-drive kinematics used in
+        robot_firmware.ino updateOdometry() so sim behaviour matches hardware.
         """
         p = self.params
+        state.command = command
 
-        # --- Speed update ---
-        if abs(throttle) > 0.01:
-            target_speed = throttle * (p.max_speed if throttle > 0 else -p.min_speed)
-            if abs(target_speed) > abs(state.speed):
-                # Accelerating
-                accel = p.acceleration * throttle
-                state.speed += accel * dt
-                state.speed = max(p.min_speed, min(p.max_speed, state.speed))
-            else:
-                # Decelerating toward target
-                decel = p.deceleration * dt
-                if state.speed > target_speed:
-                    state.speed = max(target_speed, state.speed - decel)
-                else:
-                    state.speed = min(target_speed, state.speed + decel)
-        else:
-            # Coast down
-            if abs(state.speed) < p.idle_deceleration * dt:
-                state.speed = 0.0
-            elif state.speed > 0:
-                state.speed -= p.idle_deceleration * dt
-            else:
-                state.speed += p.idle_deceleration * dt
+        # --- Motor command → target PWM (mirrors Arduino executeCommand) ---
+        left_pwm, right_pwm = MOTOR_COMMANDS.get(command, (0, 0))
+        state.left_pwm  = left_pwm
+        state.right_pwm = right_pwm
 
-        # --- Turn rate update ---
-        if abs(steering) > 0.01:
-            target_turn = steering * p.max_turn_rate
-            accel = p.turn_acceleration * dt
-            if abs(target_turn - state.turn_rate) < accel:
-                state.turn_rate = target_turn
-            elif target_turn > state.turn_rate:
-                state.turn_rate += accel
-            else:
-                state.turn_rate -= accel
-        else:
-            # Damp turn rate
-            decel = p.turn_deceleration * dt
-            if abs(state.turn_rate) < decel:
-                state.turn_rate = 0.0
-            elif state.turn_rate > 0:
-                state.turn_rate -= decel
-            else:
-                state.turn_rate += decel
+        # --- PWM → target wheel speed (cm/s, signed) ---
+        target_left  = left_pwm  / 255.0 * p.max_wheel_speed_cmps
+        target_right = right_pwm / 255.0 * p.max_wheel_speed_cmps
 
-        # --- Kinematics ---
-        state.heading += state.turn_rate * dt
-        state.heading %= 360.0
+        # --- Motor inertia: first-order lag (τ = motor_tau seconds) ---
+        alpha = 1.0 - math.exp(-dt / p.motor_tau) if p.motor_tau > 0 else 1.0
+        state.left_wheel_speed  += (target_left  - state.left_wheel_speed)  * alpha
+        state.right_wheel_speed += (target_right - state.right_wheel_speed) * alpha
 
-        rad = math.radians(state.heading)
-        dx = math.cos(rad) * state.speed * dt
-        dy = -math.sin(rad) * state.speed * dt  # screen Y inverted
+        # --- Differential-drive kinematics (matches Arduino updateOdometry) ---
+        d_left  = state.left_wheel_speed  * dt  # cm travelled by left wheel
+        d_right = state.right_wheel_speed * dt  # cm travelled by right wheel
+        d_center = (d_left + d_right) / 2.0
+        d_theta  = (d_right - d_left) / self.robot_cfg.chassis.wheelbase_cm  # radians
 
-        new_x = state.x + dx
-        new_y = state.y + dy
+        state.heading = (state.heading + math.degrees(d_theta)) % 360.0
+        state.speed   = d_center / dt if dt > 0 else 0.0
+
+        rad  = math.radians(state.heading)
+        new_x = state.x + math.cos(rad) * d_center
+        new_y = state.y - math.sin(rad) * d_center  # screen Y inverted
 
         # --- Collision ---
         margin = p.collision_margin + max(self.robot_cfg.half_length, self.robot_cfg.half_width)
@@ -177,20 +179,23 @@ class PhysicsEngine:
             # Try sliding along each axis independently
             if not self._check_collision(new_x, state.y, margin):
                 state.x = new_x
-                state.speed *= p.wall_slide_friction
+                state.left_wheel_speed  *= p.wall_slide_friction
+                state.right_wheel_speed *= p.wall_slide_friction
             elif not self._check_collision(state.x, new_y, margin):
                 state.y = new_y
-                state.speed *= p.wall_slide_friction
+                state.left_wheel_speed  *= p.wall_slide_friction
+                state.right_wheel_speed *= p.wall_slide_friction
             else:
-                # Full stop
-                state.speed *= -p.wall_bounce
+                # Full stall — wheels bounce back slightly
+                state.left_wheel_speed  *= -p.wall_bounce
+                state.right_wheel_speed *= -p.wall_bounce
         else:
             state.x = new_x
             state.y = new_y
 
         # --- Sensor update ---
         state.sensor_readings = self._read_sensors(state)
-        state.ir_readings = self._read_ir_sensors(state)
+        state.ir_readings     = self._read_ir_sensors(state)
 
         return state
 

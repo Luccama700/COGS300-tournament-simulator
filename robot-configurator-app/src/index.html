@@ -17,7 +17,9 @@
   }}
   *{box-sizing:border-box;margin:0;padding:0}
   body{font-family:var(--font);background:var(--bg);color:var(--tx);-webkit-app-region:drag;overflow:hidden;height:100vh}
-  button,input[type=text],input[type=range]{-webkit-app-region:no-drag}
+  button,input[type=text],input[type=range],input[type=number]{-webkit-app-region:no-drag}
+  .blueprint-wrap{-webkit-app-region:no-drag}
+  .legend{-webkit-app-region:no-drag}
   .app{display:flex;flex-direction:column;height:100vh;padding:0 20px 16px}
   .titlebar{height:42px;display:flex;align-items:flex-end;padding-bottom:6px;flex-shrink:0}
   .header{display:flex;align-items:center;justify-content:space-between;padding:0 0 12px;margin-bottom:14px;border-bottom:1px solid var(--bd);flex-shrink:0}
@@ -73,6 +75,14 @@
   .export-panel pre{font-size:10px;line-height:1.6;color:var(--tx2);white-space:pre-wrap;margin:10px 0 0;max-height:200px;overflow:auto;padding:12px;border-radius:8px;background:var(--bg)}
   .sensor-handle{cursor:grab}.sensor-handle:active{cursor:grabbing}
   .ir-info{padding:8px 10px;margin-bottom:10px;border-radius:8px;font-size:10px;line-height:1.5}
+  .blueprint-footer{display:flex;align-items:center;justify-content:space-between;margin-top:8px;gap:8px}
+  .move-btn{font-size:10px;padding:4px 12px;border-radius:6px;cursor:pointer;font-family:var(--font);font-weight:600;border:0.5px solid var(--bd2);background:transparent;color:var(--tx3);transition:all .12s;-webkit-app-region:no-drag}
+  .move-btn.active{border-color:var(--accent);color:var(--accent);background:var(--accent-bg)}
+  .coord-row{display:flex;gap:6px;margin-bottom:8px}
+  .coord-field{flex:1}
+  .coord-label{font-size:10px;color:var(--tx3);margin-bottom:3px}
+  .coord-input{width:100%;padding:4px 6px;border:0.5px solid var(--bd2);border-radius:5px;font-size:11px;font-family:var(--font);background:var(--bg);color:var(--tx);outline:none;-webkit-app-region:no-drag}
+  .coord-input:focus{border-color:var(--accent)}
 </style>
 </head>
 <body>
@@ -92,7 +102,10 @@
   <div class="main">
     <div class="blueprint-panel">
       <div class="blueprint-wrap"><svg id="robot-svg" viewBox="0 0 560 460" preserveAspectRatio="xMidYMid meet"></svg></div>
-      <div class="legend" id="legend"></div>
+      <div class="blueprint-footer">
+        <div class="legend" id="legend"></div>
+        <button class="move-btn" id="btn-move" onclick="toggleMoveMode()">⤢ Move</button>
+      </div>
     </div>
     <div class="controls-panel">
       <div class="tab-bar">
@@ -127,7 +140,7 @@ const DEFAULT_IR=[
   {id:"ir2",name:"IR Front-right",mountX:0.35,mountY:-0.48,threshold:500},
 ];
 let config={chassis:{length:20,width:12,wheelbase:14},drive:"caster",sensors:JSON.parse(JSON.stringify(DEFAULT_SENSORS)),irSensors:JSON.parse(JSON.stringify(DEFAULT_IR))};
-let selectedSensor=null,selectedIr=null,currentTab="chassis",exportOpen=false,idCounter=100,dragId=null,dragType=null;
+let selectedSensor=null,selectedIr=null,currentTab="chassis",exportOpen=false,idCounter=100,dragId=null,dragType=null,moveMode=false;
 const dk=window.matchMedia("(prefers-color-scheme:dark)").matches;
 
 async function loadConfig(){
@@ -199,16 +212,17 @@ function drawSVG(){
     s+=`<path d="M${sx},${sy} L${ex1},${ey1} A${rangePx},${rangePx} 0 ${la},0 ${ex2},${ey2} Z" fill="${col}" fill-opacity="${isSel?0.15:0.05}" stroke="${col}" stroke-width="${isSel?0.8:0.4}" stroke-opacity="0.3"/>`;
     s+=`<line x1="${sx}" y1="${sy}" x2="${sx+Math.cos(angRad)*rangePx}" y2="${sy-Math.sin(angRad)*rangePx}" stroke="${col}" stroke-width="0.4" stroke-dasharray="2 2" opacity="0.25"/>`;
     if(isSel)s+=`<circle cx="${sx}" cy="${sy}" r="10" fill="${col}" fill-opacity="0.06"/>`;
-    s+=`<circle cx="${sx}" cy="${sy}" r="${isSel?5.5:4}" fill="${col}" stroke="white" stroke-width="${isSel?1.8:1}" class="sensor-handle" data-id="${sensor.id}" data-type="us" style="cursor:grab"/>`;
+    s+=`<circle cx="${sx}" cy="${sy}" r="${isSel?7:moveMode?6:4}" fill="${col}" stroke="white" stroke-width="${isSel?2:moveMode?1.5:1}" class="sensor-handle" data-id="${sensor.id}" data-type="us" style="cursor:${moveMode||isSel?'grab':'default'}"/>`;
     s+=`<text x="${lx}" y="${ly-5}" text-anchor="middle" font-size="8" fill="${col}" font-weight="600" font-family="var(--font)" opacity="0.7">${sensor.name}</text>`;
   });
 
   // IR sensors
   config.irSensors.forEach((ir,i)=>{
     const col=IR_COLORS[i%IR_COLORS.length],ix=cx+ir.mountX*rw,iy=cy+ir.mountY*rh;
-    const isSel=selectedIr===ir.id,sz=isSel?7:5.5;
-    s+=`<circle cx="${ix}" cy="${iy}" r="${isSel?14:10}" fill="${col}" fill-opacity="0.08" stroke="${col}" stroke-width="0.4" stroke-opacity="0.2" stroke-dasharray="2 1.5"/>`;
-    s+=`<rect x="${ix-sz}" y="${iy-sz}" width="${sz*2}" height="${sz*2}" rx="1.5" fill="${col}" stroke="white" stroke-width="${isSel?1.8:1}" transform="rotate(45 ${ix} ${iy})" class="sensor-handle" data-id="${ir.id}" data-type="ir" style="cursor:grab"/>`;
+    const isSel=selectedIr===ir.id,active=isSel||moveMode,sz=isSel?8:moveMode?7:5.5;
+    const hitR=active?22:16;
+    s+=`<circle cx="${ix}" cy="${iy}" r="${hitR}" fill="${col}" fill-opacity="${moveMode&&!isSel?0.06:0.0}" stroke="${moveMode&&!isSel?col:'none'}" stroke-width="${moveMode?1:0}" stroke-dasharray="${moveMode?'3 2':''}" pointer-events="all" class="sensor-handle" data-id="${ir.id}" data-type="ir" style="cursor:${moveMode?'grab':'default'}"/>`;
+    s+=`<rect x="${ix-sz}" y="${iy-sz}" width="${sz*2}" height="${sz*2}" rx="1.5" fill="${col}" stroke="white" stroke-width="${isSel?2:moveMode?1.5:1}" transform="rotate(45 ${ix} ${iy})" pointer-events="none"/>`;
     s+=`<line x1="${ix}" y1="${iy+2}" x2="${ix}" y2="${iy+sz+4}" stroke="white" stroke-width="1.2" opacity="0.7"/>`;
     s+=`<text x="${ix}" y="${iy-sz-6}" text-anchor="middle" font-size="7.5" fill="${col}" font-weight="600" font-family="var(--font)" opacity="0.75">${ir.name}</text>`;
   });
@@ -263,6 +277,12 @@ function renderControls(){
             :`<span class="sensor-name">${s.name}</span>`}
             <span class="sensor-angle">${s.angle>0?'+':''}${s.angle}°</span></div>
           ${isSel?`<div class="sensor-detail">
+            <div class="coord-row">
+              <div class="coord-field"><div class="coord-label">Mount X (−0.5=left, +0.5=right)</div>
+                <input class="coord-input" type="number" min="-0.55" max="0.55" step="0.01" value="${s.mountX.toFixed(2)}" onclick="event.stopPropagation()" oninput="updateSensorMount('${s.id}','x',this.value)"></div>
+              <div class="coord-field"><div class="coord-label">Mount Y (−0.5=front, +0.5=rear)</div>
+                <input class="coord-input" type="number" min="-0.55" max="0.55" step="0.01" value="${s.mountY.toFixed(2)}" onclick="event.stopPropagation()" oninput="updateSensorMount('${s.id}','y',this.value)"></div>
+            </div>
             ${slider("Direction","°",-180,180,5,s.angle,v=>{s.angle=v;render();},"compact")}
             ${slider("Sweep","°",5,60,5,s.sweep,v=>{s.sweep=v;render();},"compact")}
             ${slider("Range","cm",20,400,10,s.range,v=>{s.range=v;render();},"compact")}
@@ -280,8 +300,13 @@ function renderControls(){
             :`<span class="sensor-name">${s.name}</span>`}
             <span class="sensor-angle">(${s.mountX.toFixed(2)}, ${s.mountY.toFixed(2)})</span></div>
           ${isSel?`<div class="sensor-detail">
+            <div class="coord-row">
+              <div class="coord-field"><div class="coord-label">Mount X (−0.5=left, +0.5=right)</div>
+                <input class="coord-input" type="number" min="-0.55" max="0.55" step="0.01" value="${s.mountX.toFixed(2)}" onclick="event.stopPropagation()" oninput="updateIrMount('${s.id}','x',this.value)"></div>
+              <div class="coord-field"><div class="coord-label">Mount Y (−0.5=front, +0.5=rear)</div>
+                <input class="coord-input" type="number" min="-0.55" max="0.55" step="0.01" value="${s.mountY.toFixed(2)}" onclick="event.stopPropagation()" oninput="updateIrMount('${s.id}','y',this.value)"></div>
+            </div>
             ${slider("Threshold","",100,900,10,s.threshold,v=>{s.threshold=v;render();},"compact")}
-            <div style="font-size:10px;color:var(--tx3);margin-bottom:6px">Drag the diamond on the blueprint to reposition</div>
             <button class="btn danger" onclick="event.stopPropagation();removeIr('${s.id}')">Remove</button></div>`:''}</div>`;}).join("")}`;bindSliders(el);
   }
 }
@@ -308,6 +333,9 @@ function renderExport(){const p=document.getElementById("export-panel");p.style.
 
 function selectSensor(id){selectedSensor=selectedSensor===id?null:id;selectedIr=null;render();}
 function selectIr(id){selectedIr=selectedIr===id?null:id;selectedSensor=null;render();}
+function toggleMoveMode(){moveMode=!moveMode;document.getElementById("btn-move").classList.toggle("active",moveMode);document.getElementById("btn-move").textContent=moveMode?"✕ Done":"⤢ Move";drawSVG();}
+function updateSensorMount(id,axis,v){v=parseFloat(v);if(isNaN(v))return;const s=config.sensors.find(x=>x.id===id);if(!s)return;v=Math.max(-0.55,Math.min(0.55,v));if(axis==="x")s.mountX=v;else s.mountY=v;drawSVG();}
+function updateIrMount(id,axis,v){v=parseFloat(v);if(isNaN(v))return;const s=config.irSensors.find(x=>x.id===id);if(!s)return;v=Math.max(-0.55,Math.min(0.55,v));if(axis==="x")s.mountX=v;else s.mountY=v;drawSVG();}
 function addSensor(){if(config.sensors.length>=8)return;const s={id:"s"+(++idCounter),name:"Ultrasonic "+(config.sensors.length+1),mountX:0,mountY:0,angle:0,range:200,sweep:30};config.sensors.push(s);selectedSensor=s.id;selectedIr=null;render();}
 function removeSensor(id){config.sensors=config.sensors.filter(s=>s.id!==id);if(selectedSensor===id)selectedSensor=null;render();}
 function updateSensorName(id,n){const s=config.sensors.find(x=>x.id===id);if(s){s.name=n;renderLegend();drawSVG();}}

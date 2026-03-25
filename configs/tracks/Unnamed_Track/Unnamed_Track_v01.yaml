@@ -1,0 +1,14 @@
+track:
+  name: Unnamed Track
+  bounds:
+    width: 400.0
+    height: 300.0
+  walls: []
+  line_paths: []
+  start:
+    x: 0.0
+    y: 0.0
+    heading: 0.0
+  goal:
+    x: 0.0
+    y: 0.0
