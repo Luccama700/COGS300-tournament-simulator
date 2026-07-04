@@ -55,12 +55,13 @@ class GridPlanner:
     inflated by the robot's collision radius so any grid path is drivable.
     """
 
-    # Default inflation = robot half-width (6) + collision margin (1) + buffer
-    # for the swing of the chassis nose in turns. The maze's 20cm slits are
-    # dead-end side pockets, so the solution route tolerates this inflation;
-    # pass a smaller inflate_cm if a track ever routes through a 20cm slit.
+    # Default inflation = robot half-width (6) + collision margin (1) + buffer.
+    # The restored entry route threads 20cm slits (12cm chassis, lengthwise),
+    # which caps inflation at 8: the planner needs ≥1 free cell in a
+    # 20−2×8=4cm channel. Corner clearance is handled separately by the
+    # densify+push pass (12.5cm around wall endpoints), not by inflation.
     def __init__(self, track: TrackData, cell_cm: float = 2.0,
-                 inflate_cm: float = 9.5, pad_cm: float = 40.0):
+                 inflate_cm: float = 8.0, pad_cm: float = 40.0):
         xs = [track.start_x, track.goal_x]
         ys = [track.start_y, track.goal_y]
         for w in track.walls:
@@ -88,6 +89,24 @@ class GridPlanner:
 
         for w in track.walls:
             self._stamp_wall(*w)
+
+        # Open-floor cost multiplier: cells with no wall within ~55cm are
+        # "blind" — nothing for the ultrasonics to range against, so a
+        # sensor-driven policy cannot hold a course there (2% odometry error
+        # scatters a 300cm blind dash wider than a corridor mouth). Prefer
+        # wall-adjacent routes even when slightly longer.
+        R = max(1, int(35.0 / cell_cm))   # ~useful US wall-servo range
+        B = self.blocked.astype(np.int64)
+        ii = np.zeros((self.ny + 1, self.nx + 1), dtype=np.int64)
+        ii[1:, 1:] = B.cumsum(0).cumsum(1)
+        ys = np.arange(self.ny)
+        xs = np.arange(self.nx)
+        y1 = np.clip(ys - R, 0, self.ny)[:, None]
+        y2 = np.clip(ys + R + 1, 0, self.ny)[:, None]
+        x1 = np.clip(xs - R, 0, self.nx)[None, :]
+        x2 = np.clip(xs + R + 1, 0, self.nx)[None, :]
+        cnt = ii[y2, x2] - ii[y1, x2] - ii[y2, x1] + ii[y1, x1]
+        self.step_cost = np.where(cnt > 0, 1.0, 1.6)
 
     def _stamp_wall(self, x1, y1, x2, y2):
         length = math.hypot(x2 - x1, y2 - y1)
@@ -174,7 +193,7 @@ class GridPlanner:
                 if dx and dy and (self.blocked[cur[1], cur[0] + dx] or
                                   self.blocked[cur[1] + dy, cur[0]]):
                     continue
-                ng = gc + cost
+                ng = gc + cost * self.step_cost[nxt[1], nxt[0]]
                 if ng < g.get(nxt, float("inf")):
                     g[nxt] = ng
                     came[nxt] = cur
@@ -199,7 +218,8 @@ class GridPlanner:
 # ── Hybrid route builder ─────────────────────────────────────────────────────
 
 def build_route(track: TrackData, grid: GridPlanner | None = None,
-                n_exit_candidates: int = 4) -> tuple[list[tuple[float, float]], dict]:
+                n_exit_candidates: int = 4,
+                prefer_terminal: bool = False) -> tuple[list[tuple[float, float]], dict]:
     """
     Build the full start→goal route:
       line-network A* (follow the tape) + occupancy-grid A* (maze to the goal).
@@ -239,6 +259,37 @@ def build_route(track: TrackData, grid: GridPlanner | None = None,
         raise RuntimeError("Line network unreachable from start")
     max_line = max(line_lens.values())
 
+    # prefer_terminal: restrict exits to the tape's far terminal (the course
+    # hands the robot into the maze there). On this track's v03 restoration
+    # that route threads 20cm slits with 90° elbows — at the edge of what the
+    # no-reverse command set can drive (expert ~53%) — so the default keeps
+    # exit scoring open and relies on the wall-hug cost to keep the transit
+    # observable.
+    terminal_ids = {n.id for n in nodes
+                    if len(n.neighbors) <= 1
+                    and line_lens.get(n.id, 0.0) >= 0.6 * max_line}
+    candidate_sets = ([n for n in nodes if n.id in terminal_ids], nodes) \
+        if (prefer_terminal and terminal_ids) else (nodes,)
+
+    best = None
+    for candidate_set in candidate_sets:
+        if best is not None:
+            break
+        best = _score_exits(candidate_set, line_paths_by_node, line_lens,
+                            max_line, grid, gx, gy)
+
+    if best is None:
+        raise RuntimeError("No line+grid route found from start to goal")
+
+    _, line_wps, tail, exit_id = best
+    info["exit_node"] = exit_id
+    info["line_len"] = round(polyline_length(line_wps), 1)
+    route = [(track.start_x, track.start_y)] + line_wps + tail
+    route = _push_from_corners(_dedupe(route), track, grid)
+    return route, info
+
+
+def _score_exits(nodes, line_paths_by_node, line_lens, max_line, grid, gx, gy):
     best = None
     for cand in nodes:
         if cand.id not in line_paths_by_node:
@@ -268,16 +319,7 @@ def build_route(track: TrackData, grid: GridPlanner | None = None,
         score = tail_len + 2.0 * (max_line - line_lens[cand.id]) + turn_pen
         if best is None or score < best[0]:
             best = (score, line_wps, tail, cand.id)
-
-    if best is None:
-        raise RuntimeError("No line+grid route found from start to goal")
-
-    _, line_wps, tail, exit_id = best
-    info["exit_node"] = exit_id
-    info["line_len"] = round(polyline_length(line_wps), 1)
-    route = [(track.start_x, track.start_y)] + line_wps + tail
-    route = _push_from_corners(_dedupe(route), track, grid)
-    return route, info
+    return best
 
 
 def _dedupe(pts, eps: float = 1.0):
@@ -675,8 +717,10 @@ def make_follower(route, info: dict, decision_hz: float = 10.0,
         w_fast = physics_params.base_pwm * v
         w_slow = -int(physics_params.base_pwm * 0.3) * v
         hard_dps = math.degrees((w_fast - w_slow) / robot_cfg.chassis.wheelbase_cm)
+    # Ride the tape to (nearly) its end: handing off to pursuit early leaves
+    # the robot misaligned entering the maze mouth right after the tape.
     return RouteFollower(route, grid=info.get("grid"),
-                         line_mode_until_cm=max(0.0, line_len - 20.0),
+                         line_mode_until_cm=max(0.0, line_len - 5.0),
                          decision_hz=decision_hz, ir_front=ir_front,
                          hard_turn_dps=hard_dps)
 
