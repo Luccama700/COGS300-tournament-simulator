@@ -32,8 +32,12 @@ robot-configurator-app/out/
 .DS_Store
 .AppleDouble
 
-# Generated training data (regenerate with generate_line_data.py)
+# Generated training data (regenerate with generate_data_v2.py)
 data/
+
+# Trained models — intermediate checkpoints are disposable; final validated
+# models are committed explicitly with `git add -f models/<name>.npz`
+models/
 
 # Calibration output (generated data, not source)
 calibration/data/
