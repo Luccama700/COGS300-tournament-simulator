@@ -218,7 +218,7 @@ def build_route(track: TrackData, grid: GridPlanner | None = None,
         if tail is None:
             raise RuntimeError("GridPlanner found no path from start to goal")
         info["exit_node"] = None
-        return _dedupe(tail), info
+        return _push_from_corners(_dedupe(tail), track, grid), info
 
     nodes, _ = build_line_graph(track)
     start_id = find_nearest_node(nodes, track.start_x, track.start_y)
@@ -276,7 +276,8 @@ def build_route(track: TrackData, grid: GridPlanner | None = None,
     info["exit_node"] = exit_id
     info["line_len"] = round(polyline_length(line_wps), 1)
     route = [(track.start_x, track.start_y)] + line_wps + tail
-    return _dedupe(route), info
+    route = _push_from_corners(_dedupe(route), track, grid)
+    return route, info
 
 
 def _dedupe(pts, eps: float = 1.0):
@@ -284,6 +285,48 @@ def _dedupe(pts, eps: float = 1.0):
     for p in pts[1:]:
         if math.hypot(p[0] - out[-1][0], p[1] - out[-1][1]) > eps:
             out.append(p)
+    return out
+
+
+def _push_from_corners(route, track: TrackData, grid: GridPlanner,
+                       corner_clear_cm: float = 12.5):
+    """
+    Push route points away from nearby wall ENDPOINTS (convex corners).
+
+    Straight corridor sections only need half-width clearance and the grid's
+    9.5cm inflation is fine — but when the route TURNS around a wall corner,
+    the chassis nose swings ~12cm from the center and wedges on the corner
+    point (observed at the entry fin, the spiral mouth, and the old
+    antechamber chicane). Inflating the whole grid that much would seal the
+    track's legitimate ~30cm passages, so widen clearance only at corners.
+    """
+    corners = []
+    for w in track.walls:
+        corners.append((w[0], w[1]))
+        corners.append((w[2], w[3]))
+
+    # Densify first: the offending close pass is usually mid-segment on the
+    # smoothed polyline, not at an existing vertex.
+    dense: list[tuple[float, float]] = [tuple(route[0])]
+    for a, b in zip(route, route[1:]):
+        seg = math.hypot(b[0] - a[0], b[1] - a[1])
+        n = max(1, int(seg / 5.0))
+        for k in range(1, n + 1):
+            t = k / n
+            dense.append((a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])))
+    out = dense
+    for i in range(1, len(out) - 1):
+        x, y = out[i]
+        for cx, cy in corners:
+            d = math.hypot(x - cx, y - cy)
+            if 1e-6 < d < corner_clear_cm:
+                nx_, ny_ = (x - cx) / d, (y - cy) / d
+                cand = (cx + nx_ * corner_clear_cm, cy + ny_ * corner_clear_cm)
+                # keep the adjusted point only if the route stays drivable
+                if (grid.line_of_sight(*out[i - 1], *cand)
+                        and grid.line_of_sight(*cand, *out[i + 1])):
+                    out[i] = cand
+                    x, y = cand
     return out
 
 
@@ -307,8 +350,24 @@ class RouteFollower:
                  lookahead_cm: float = 12.0,
                  slight_deg: float = 12.0,
                  hard_deg: float = 50.0,
-                 hyst_deg: float = 5.0):
+                 hyst_deg: float = 5.0,
+                 weave_amp_cm: float = 0.0,
+                 weave_wavelength_cm: float = 50.0,
+                 weave_until_cm: float = 0.0):
+        """
+        weave_amp_cm / weave_until_cm: deliberate lateral oscillation of the
+        pursuit target for the first `weave_until_cm` of the route (the tape
+        section). The robot's IR sensors sit 12.4cm apart around a 2.5cm tape
+        — driven straight, they see floor 80% of the time and a cloned policy
+        gets no tracking signal. Weaving sweeps a sensor across the tape every
+        half wavelength, giving the learner a continuous, learnable "which
+        side am I on" heartbeat. This is how sparse-sensor line followers
+        work in practice (bang-bang edge tracking).
+        """
         self.grid = grid  # for line-of-sight target clamping (prevents corner cutting)
+        self.weave_amp = weave_amp_cm
+        self.weave_wavelength = max(10.0, weave_wavelength_cm)
+        self.weave_until = weave_until_cm
         pts = np.asarray(route, dtype=float)
         seg = pts[1:] - pts[:-1]
         seg_len = np.hypot(seg[:, 0], seg[:, 1])
@@ -386,6 +445,15 @@ class RouteFollower:
         # the chassis wedges on them (the discrete command set cannot reverse).
         s = self.progress + self.lookahead
         tx, ty = self._point_at(s)
+        if self.weave_amp > 0.0 and s < self.weave_until:
+            # Lateral offset perpendicular to the route tangent
+            ax, ay = self._point_at(s + 4.0)
+            tlen = math.hypot(ax - tx, ay - ty)
+            if tlen > 1e-6:
+                nx_, ny_ = -(ay - ty) / tlen, (ax - tx) / tlen
+                off = self.weave_amp * math.sin(2.0 * math.pi * s / self.weave_wavelength)
+                tx += nx_ * off
+                ty += ny_ * off
         if self.grid is not None:
             while s > self.progress + 5.0 and not self.grid.line_of_sight(x, y, tx, ty):
                 s -= 3.0
@@ -453,6 +521,20 @@ class RouteFollower:
         if a < t_hard:
             return CMD_SLIGHT_L if left else CMD_SLIGHT_R
         return CMD_HARD_L if left else CMD_HARD_R
+
+
+def make_follower(route, info: dict, weave: bool = True) -> RouteFollower:
+    """
+    Standard follower construction for data generation / DAgger / evaluation.
+    Enables tape-section weaving whenever the track has a line phase, so all
+    pipeline stages demonstrate the same (observable) behavior.
+    """
+    line_len = info.get("line_len") or 0.0
+    if weave and line_len > 60.0:
+        return RouteFollower(route, grid=info.get("grid"),
+                             weave_amp_cm=5.5, weave_wavelength_cm=50.0,
+                             weave_until_cm=line_len - 25.0)
+    return RouteFollower(route, grid=info.get("grid"))
 
 
 # ── CLI: plan a route and plot it ────────────────────────────────────────────

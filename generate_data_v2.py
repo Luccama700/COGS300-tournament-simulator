@@ -33,12 +33,12 @@ from multiprocessing import Pool
 from track import load_track
 from robot_config import load_robot_config
 from physics import load_physics_params
-from expert_policy import build_route, RouteFollower, CMD_STOP
+from expert_policy import build_route, make_follower, CMD_STOP
 from policy_runtime import FeatureBuilder
 from sim_env import SimEnv, RANDOMIZATION_PRESETS
 
 
-def run_episode(env: SimEnv, route, grid, fb: FeatureBuilder,
+def run_episode(env: SimEnv, route, info, fb: FeatureBuilder,
                 seed: int, max_time_s: float = 150.0,
                 stop_frames_cap: int = 6):
     """
@@ -47,7 +47,7 @@ def run_episode(env: SimEnv, route, grid, fb: FeatureBuilder,
     decision time t and the expert's command for time t.
     """
     obs = env.reset(seed=seed)
-    follower = RouteFollower(route, grid=grid)
+    follower = make_follower(route, info)
     fb.reset()
 
     rows = []
@@ -98,7 +98,7 @@ def _worker(job):
     fb = FeatureBuilder(n_us=len(robot.sensors), n_ir=max(2, len(robot.ir_sensors)))
     out = []
     for seed in seeds:
-        out.append(run_episode(env, route, info["grid"], fb, seed))
+        out.append(run_episode(env, route, info, fb, seed))
     return out
 
 

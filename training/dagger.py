@@ -33,12 +33,12 @@ import numpy as np
 from track import load_track
 from robot_config import load_robot_config
 from physics import load_physics_params
-from expert_policy import build_route, RouteFollower, CMD_STOP
+from expert_policy import build_route, make_follower, CMD_STOP
 from policy_runtime import FeatureBuilder, MLPPolicy
 from sim_env import SimEnv
 
 
-def rollout_with_expert_labels(env, route, grid, model, fb: FeatureBuilder,
+def rollout_with_expert_labels(env, route, info, model, fb: FeatureBuilder,
                                beta: float, seed: int, decision_hz: float,
                                max_time_s: float = 120.0):
     """
@@ -48,7 +48,7 @@ def rollout_with_expert_labels(env, route, grid, model, fb: FeatureBuilder,
         executed cmd = expert w.p. beta else learner  →  history update  →  env.step
     """
     obs = env.reset(seed=seed)
-    follower = RouteFollower(route, grid=grid)
+    follower = make_follower(route, info)
     fb.reset()
     rng = np.random.default_rng(seed)
 
@@ -110,7 +110,6 @@ def main():
     robot = load_robot_config(args.robot)
     params, _ = load_physics_params(args.physics)
     route, info = build_route(track)
-    grid = info["grid"]
     env = SimEnv(track, robot, params, decision_hz=args.decision_hz,
                  randomization=args.randomization)
 
@@ -135,7 +134,7 @@ def main():
         wins = 0
         for ep in range(args.episodes_per_iter):
             rows, reached = rollout_with_expert_labels(
-                env, route, grid, model, fb, beta,
+                env, route, info, model, fb, beta,
                 seed=args.seed + it * 1000 + ep, decision_hz=args.decision_hz)
             wins += reached
             new_rows.append(rows)

@@ -26,7 +26,7 @@ import numpy as np
 from track import load_track
 from robot_config import load_robot_config
 from physics import load_physics_params
-from expert_policy import build_route, RouteFollower, plot_route, CMD_STOP
+from expert_policy import build_route, make_follower, plot_route, CMD_STOP
 from policy_runtime import MLPPolicy, PolicyRuntime
 from sim_env import SimEnv, RANDOMIZATION_PRESETS
 
@@ -45,19 +45,18 @@ def evaluate(track_path: str, robot_path: str, physics_path: str,
     expert_mode = policy_path == "expert"
     if expert_mode:
         route, info = build_route(track)
-        grid = info["grid"]
     else:
         model = MLPPolicy.load(policy_path)
         runtime = PolicyRuntime(model, decision_hz=decision_hz, enabled=safeguards)
 
     stats = {"success": 0, "times": [], "contacts": [], "spins": 0,
-             "stuck": 0, "timeout": 0, "final_dists": [], "trajs": []}
+             "stuck": 0, "timeout": 0, "lost": 0, "final_dists": [], "trajs": []}
     max_steps = int(max_time_s * decision_hz)
 
     for ep in range(episodes):
         obs = env.reset(seed=seed + ep)
         if expert_mode:
-            actor = RouteFollower(route, grid=grid)
+            actor = make_follower(route, info)
         else:
             runtime.reset()
         traj = []
@@ -75,6 +74,9 @@ def evaluate(track_path: str, robot_path: str, physics_path: str,
             if env.dist_to_goal() < 5.0:
                 outcome = "success"
                 break
+            if env.dist_to_goal() > 1500.0:        # left the arena entirely
+                outcome = "lost"
+                break
             moved = math.hypot(obs["true_x"] - prev[0], obs["true_y"] - prev[1])
             if cmd != CMD_STOP and moved < 0.05:
                 stall += 1
@@ -88,6 +90,7 @@ def evaluate(track_path: str, robot_path: str, physics_path: str,
         stats["success"] += ok
         stats["timeout"] += outcome == "timeout"
         stats["stuck"] += outcome == "stuck"
+        stats["lost"] += outcome == "lost"
         if ok:
             stats["times"].append(obs["elapsed"])
         stats["contacts"].append(obs["collided_total"])
@@ -106,7 +109,7 @@ def evaluate(track_path: str, robot_path: str, physics_path: str,
         "success_rate": stats["success"] / n,
         "avg_time_s": float(np.mean(stats["times"])) if stats["times"] else None,
         "avg_contact_frames": float(np.mean(stats["contacts"])),
-        "stuck": stats["stuck"], "timeout": stats["timeout"],
+        "stuck": stats["stuck"], "timeout": stats["timeout"], "lost": stats["lost"],
         "spin_events_total": stats["spins"],
         "median_final_dist": float(np.median(stats["final_dists"])),
     }
