@@ -332,6 +332,23 @@ a spin watchdog (sustained one-direction rotation → straight burst), and a
 front-wall reflex. Guards can be disabled (`--no-safeguards`) to measure the
 raw model.
 
+### Current results (v03 track, front-IR config, BASE_SPEED 110)
+
+| Policy | Full-course success (mild randomization) | Notes |
+|--------|------------------------------------------|-------|
+| Sensor-driven expert (`--policy expert`) | **15/15 – 20/20** across none/mild/heavy | Tape bang-bang + fire-armed corner pivots + wall-hug transit + maze pursuit; ~118s runs |
+| Behavior cloning (96×96 MLP, 330k rows) | 0/20 | Masters the tape phase (locks through every zigzag vertex), degrades over the ~1200-decision horizon in the maze |
+| + DAgger (mixed rollouts) | up to 5/50 during β=0.15 rollouts; 0/30 for late checkpoints | Mid-loop checkpoints peak, late iterations drown in recovery-state labels |
+
+The honest summary: the *system* now works — simulator physics, track, expert
+autopilot, data/train/eval/DAgger infrastructure — and the cloned policy
+reliably solves the tape section, which is where the original robot spun and
+crashed. Cloning the full 20+-decision-per-second, two-minute course into a
+feedforward net remains open; the highest-leverage next steps are a recurrent
+policy (the expert is a state machine; its hidden state defeats feedforward
+nets), closed-loop checkpoint selection inside the DAgger loop, and recovery-
+data downweighting so late iterations stop regressing.
+
 Note on odometry: the sim integrates signed wheel travel for heading and
 distance, which corresponds to the signed-tick firmware fix described above.
 The raw `enc_l`/`enc_r` counters remain direction-blind like the hardware.
