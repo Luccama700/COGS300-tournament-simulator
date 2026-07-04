@@ -351,23 +351,34 @@ class RouteFollower:
                  slight_deg: float = 12.0,
                  hard_deg: float = 50.0,
                  hyst_deg: float = 5.0,
-                 weave_amp_cm: float = 0.0,
-                 weave_wavelength_cm: float = 50.0,
-                 weave_until_cm: float = 0.0):
+                 line_mode_until_cm: float = 0.0,
+                 ir_threshold: float = 400.0,
+                 lost_escalate_s: float = 2.5,
+                 fallback_after_s: float = 6.5,   # room for the 2-phase search
+                 decision_hz: float = 10.0,
+                 ir_front: bool = False):
         """
-        weave_amp_cm / weave_until_cm: deliberate lateral oscillation of the
-        pursuit target for the first `weave_until_cm` of the route (the tape
-        section). The robot's IR sensors sit 12.4cm apart around a 2.5cm tape
-        — driven straight, they see floor 80% of the time and a cloned policy
-        gets no tracking signal. Weaving sweeps a sensor across the tape every
-        half wavelength, giving the learner a continuous, learnable "which
-        side am I on" heartbeat. This is how sparse-sensor line followers
-        work in practice (bang-bang edge tracking).
+        line_mode_until_cm: while route progress is below this, the expert
+        follows the tape with a SENSOR-DRIVEN bang-bang controller instead of
+        privileged pure pursuit. Rationale (measured, not theoretical): the
+        IR sensors sit 12.4cm apart around a 2.5cm tape, so a pose-based
+        expert glides with both sensors on floor 80% of the time — a cloned
+        policy gets no tracking signal and wanders (first BC models orbited
+        the tape without locking on). Bang-bang makes every steering switch
+        a function of the OBSERVATION stream (IR firing side, last command,
+        rotation since the turn started), so the behavior is clonable by
+        construction. With rear-mounted sensors the correct polarity is
+        "turn toward the side that fired": yawing left sweeps the rear
+        (and its sensors) right across the tape, and vice versa.
+        The privileged pursuit remains as a rare rescue fallback and for the
+        maze phase, where ultrasonics observe the walls directly.
         """
         self.grid = grid  # for line-of-sight target clamping (prevents corner cutting)
-        self.weave_amp = weave_amp_cm
-        self.weave_wavelength = max(10.0, weave_wavelength_cm)
-        self.weave_until = weave_until_cm
+        self.line_mode_until = line_mode_until_cm
+        self.ir_threshold = ir_threshold
+        self.ir_front = ir_front
+        self._lost_escalate = max(1, int(lost_escalate_s * decision_hz))
+        self._fallback_after = max(2, int(fallback_after_s * decision_hz))
         pts = np.asarray(route, dtype=float)
         seg = pts[1:] - pts[:-1]
         seg_len = np.hypot(seg[:, 0], seg[:, 1])
@@ -384,6 +395,23 @@ class RouteFollower:
         self.slight = slight_deg
         self.hard = hard_deg
         self.hyst = hyst_deg
+
+        # Line-phase corner table: (arc_length, turn_is_left) for every route
+        # vertex sharper than 45°. Corners this sharp cannot be caught
+        # reactively at speed (the tape ends up behind the sensor line), so
+        # the expert turns pre-emptively at the vertex. The cloned policy
+        # learns the same timing from its odometry-distance feature.
+        self._corners: list[tuple[float, bool, float]] = []  # (arc_s, left, deg)
+        for i in range(1, len(self.pts) - 1):
+            if self.cum[i] > self.line_mode_until:
+                break
+            v1 = self.pts[i] - self.pts[i - 1]
+            v2 = self.pts[i + 1] - self.pts[i]
+            a1 = math.degrees(math.atan2(-v1[1], v1[0]))
+            a2 = math.degrees(math.atan2(-v2[1], v2[0]))
+            turn = wrap_deg(a2 - a1)
+            if abs(turn) > 45.0:
+                self._corners.append((float(self.cum[i]), turn > 0, abs(turn)))
         self.reset()
 
     def reset(self):
@@ -396,6 +424,15 @@ class RouteFollower:
         self._recovery_seq: list[int] = []   # queued recovery commands
         self._recover_count = 0              # consecutive recoveries (escalation)
         self._last_recover_progress = -1e9
+        # Bang-bang line-following state
+        self._sweep = CMD_SLIGHT_L           # current sweep direction command
+        self._since_fire = 0                 # decisions since an IR fired
+        self._last_fire_left = True
+        self._streak = 0                     # consecutive same-side hot frames
+        self._corners_done: set[int] = set() # one-shot corner pivots consumed
+        self._corner_seq = 0                 # frames left in committed pivot
+        self._corner_left = True
+        self.fallback_frames = 0             # pose-rescue usage (data quality metric)
 
     # -- geometry helpers ------------------------------------------------
 
@@ -430,8 +467,13 @@ class RouteFollower:
 
     # -- policy ----------------------------------------------------------
 
-    def command(self, x: float, y: float, heading_deg: float) -> int:
-        """Privileged expert action for the robot's true pose."""
+    def command(self, x: float, y: float, heading_deg: float,
+                ir: list[float] | None = None) -> int:
+        """
+        Expert action. Pose (x, y, heading) is privileged sim-only state;
+        `ir` are the actual IR sensor readings ([left, right], 0-1023) and
+        drive the bang-bang tape follower during the line phase.
+        """
         if self.done:
             return CMD_STOP
         if math.hypot(self.goal[0] - x, self.goal[1] - y) < self.goal_radius:
@@ -440,20 +482,23 @@ class RouteFollower:
 
         self._project(x, y)
 
+        # ── Line phase: sensor-driven bang-bang (see __init__ docstring) ──
+        if (ir is not None and len(ir) >= 2
+                and self.progress < self.line_mode_until
+                and self.offset_dist < 30.0):
+            cmd = self._bangbang(ir, self.progress)
+            if cmd is not None:
+                self.last_cmd = cmd
+                return cmd
+            # else: lost too long — fall through to pose-based rescue
+
         # Pure-pursuit target, clamped to line-of-sight through the inflated
         # grid. Without this the lookahead chord cuts across wall corners and
         # the chassis wedges on them (the discrete command set cannot reverse).
+        if self.progress < self.line_mode_until:
+            self.fallback_frames += 1
         s = self.progress + self.lookahead
         tx, ty = self._point_at(s)
-        if self.weave_amp > 0.0 and s < self.weave_until:
-            # Lateral offset perpendicular to the route tangent
-            ax, ay = self._point_at(s + 4.0)
-            tlen = math.hypot(ax - tx, ay - ty)
-            if tlen > 1e-6:
-                nx_, ny_ = -(ay - ty) / tlen, (ax - tx) / tlen
-                off = self.weave_amp * math.sin(2.0 * math.pi * s / self.weave_wavelength)
-                tx += nx_ * off
-                ty += ny_ * off
         if self.grid is not None:
             while s > self.progress + 5.0 and not self.grid.line_of_sight(x, y, tx, ty):
                 s -= 3.0
@@ -502,6 +547,76 @@ class RouteFollower:
         self.last_cmd = cmd
         return cmd
 
+    def _bangbang(self, ir: list[float], progress: float) -> int | None:
+        """
+        Tape follower on raw IR. Returns None when lost long enough that the
+        pose-based rescue should take over (rare; tracked in fallback_frames).
+
+        Front-mounted sensors (stable feedback): steer toward the hot sensor,
+        drive STRAIGHT while the tape sits quietly between the sensors —
+        the classic 3-state line follower. Corners sharper than 45° are taken
+        pre-emptively from the corner table (see __init__).
+        Rear-mounted sensors (unstable lever arm): hold the sweep until the
+        OPPOSITE sensor fires; driving straight when quiet would just carry
+        the accumulated yaw error away from the tape.
+        """
+        left_hot = ir[0] > self.ir_threshold
+        right_hot = ir[1] > self.ir_threshold
+        if left_hot or right_hot:
+            # Tape found — always beats a committed corner pivot (finishing
+            # the pivot blind once the tape is visible caused hard-turn
+            # circling deadlocks pinned by monotonic progress).
+            self._corner_seq = 0
+            fire_left = left_hot and (not right_hot or ir[0] >= ir[1])
+            if fire_left == self._last_fire_left and self._since_fire == 0:
+                self._streak += 1
+            else:
+                self._streak = 1
+            self._last_fire_left = fire_left
+            self._since_fire = 0
+            if self.ir_front and self._streak >= 2:
+                # Same side persistently hot → the tape is bending away
+                # (corner), not a passing graze — turn hard to stay with it.
+                self._sweep = CMD_HARD_L if fire_left else CMD_HARD_R
+            else:
+                self._sweep = CMD_SLIGHT_L if fire_left else CMD_SLIGHT_R
+            return self._sweep
+
+        # Committed corner pivot in progress (quiet sensors)
+        if self._corner_seq > 0:
+            self._corner_seq -= 1
+            self._since_fire = 0
+            return CMD_HARD_L if self._corner_left else CMD_HARD_R
+
+        # Pre-emptive one-shot corner pivot (front mode): sharper than 45°
+        # the tape leaves the sensors' reach almost instantly at speed, so
+        # turn ~the vertex angle open-loop, sized by the corner table.
+        if self.ir_front:
+            for idx, (s_k, turn_left, deg) in enumerate(self._corners):
+                if idx not in self._corners_done and -2.0 <= s_k - progress <= 6.0:
+                    self._corners_done.add(idx)
+                    self._corner_left = turn_left
+                    # hard turn rotates ~19 deg per decision at 10 Hz
+                    self._corner_seq = max(1, int(deg / 19.0)) - 1
+                    self._since_fire = 0
+                    return CMD_HARD_L if turn_left else CMD_HARD_R
+
+        self._since_fire += 1
+        if self._since_fire > self._fallback_after:
+            return None  # genuinely lost — pose rescue
+        if self._since_fire > self._lost_escalate:
+            # Tape gone quiet (vertex overshoot / drift). Two-phase search:
+            # first arc hard toward the side that last saw the tape (~1.2s,
+            # covers the common case), then sweep back the OTHER way twice as
+            # long — a widening scan instead of circling one way forever.
+            phase = self._since_fire - self._lost_escalate
+            first = CMD_HARD_L if self._last_fire_left else CMD_HARD_R
+            second = CMD_HARD_R if self._last_fire_left else CMD_HARD_L
+            return first if phase <= self._lost_escalate else second
+        if self.ir_front:
+            return CMD_FORWARD   # tape between the sensors — hold course
+        return self._sweep       # rear sensors: keep sweeping to the far edge
+
     def _classify(self, err: float) -> int:
         """Map heading error to a discrete command, with hysteresis."""
         a = abs(err)
@@ -523,18 +638,22 @@ class RouteFollower:
         return CMD_HARD_L if left else CMD_HARD_R
 
 
-def make_follower(route, info: dict, weave: bool = True) -> RouteFollower:
+def make_follower(route, info: dict, decision_hz: float = 10.0,
+                  robot_cfg=None) -> RouteFollower:
     """
     Standard follower construction for data generation / DAgger / evaluation.
-    Enables tape-section weaving whenever the track has a line phase, so all
-    pipeline stages demonstrate the same (observable) behavior.
+    Enables sensor-driven bang-bang tape following for the line phase, so all
+    pipeline stages demonstrate the same (observable) behavior. IR mounting
+    (front vs rear) is read from the robot config — it changes the stable
+    control law (see RouteFollower._bangbang).
     """
     line_len = info.get("line_len") or 0.0
-    if weave and line_len > 60.0:
-        return RouteFollower(route, grid=info.get("grid"),
-                             weave_amp_cm=5.5, weave_wavelength_cm=50.0,
-                             weave_until_cm=line_len - 25.0)
-    return RouteFollower(route, grid=info.get("grid"))
+    ir_front = False
+    if robot_cfg is not None and robot_cfg.ir_sensors:
+        ir_front = all(s.mount_y < 0 for s in robot_cfg.ir_sensors)
+    return RouteFollower(route, grid=info.get("grid"),
+                         line_mode_until_cm=max(0.0, line_len - 20.0),
+                         decision_hz=decision_hz, ir_front=ir_front)
 
 
 # ── CLI: plan a route and plot it ────────────────────────────────────────────

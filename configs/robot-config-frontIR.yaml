@@ -1,0 +1,26 @@
+robot:
+  chassis: {length_cm: 20, width_cm: 12, wheelbase_cm: 14}
+  drive_type: caster
+  sensors:
+  - name: Front
+    mount: [0.0, -0.48]
+    angle: 0
+    range: 400
+    sweep: 30
+  - name: Left
+    mount: [-0.5, -0.2]
+    angle: -90
+    range: 400
+    sweep: 30
+  - name: Right
+    mount: [0.5, -0.2]
+    angle: 90
+    range: 400
+    sweep: 30
+  ir_sensors:
+  - name: IR Front-left
+    mount: [-0.5, -0.55]
+    threshold: 520
+  - name: IR Front-right
+    mount: [0.53, -0.55]
+    threshold: 500

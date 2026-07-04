@@ -56,7 +56,8 @@ def evaluate(track_path: str, robot_path: str, physics_path: str,
     for ep in range(episodes):
         obs = env.reset(seed=seed + ep)
         if expert_mode:
-            actor = make_follower(route, info)
+            actor = make_follower(route, info, decision_hz=decision_hz,
+                                  robot_cfg=robot)
         else:
             runtime.reset()
         traj = []
@@ -64,7 +65,8 @@ def evaluate(track_path: str, robot_path: str, physics_path: str,
         outcome = "timeout"
         for _ in range(max_steps):
             if expert_mode:
-                cmd = actor.command(obs["true_x"], obs["true_y"], obs["true_heading"])
+                cmd = actor.command(obs["true_x"], obs["true_y"], obs["true_heading"],
+                                    ir=obs["ir"])
             else:
                 cmd = runtime.step(obs)
             prev = (obs["true_x"], obs["true_y"])

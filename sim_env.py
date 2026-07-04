@@ -164,12 +164,24 @@ class SimEnv:
         wheel_l_cm = 0.0
         wheel_r_cm = 0.0
         collided = 0
+        ir_peak = None
         for _ in range(self.substeps):
             self.engine.step(st, cmd, self.dt)
             wheel_l_cm += abs(st.left_wheel_speed) * self.dt
             wheel_r_cm += abs(st.right_wheel_speed) * self.dt
             if st.wall_contact:
                 collided += 1
+            # Peak-hold IR across the decision window: a tape crossing lasts
+            # well under one decision period at speed, and a single
+            # end-of-window sample would miss it. (Firmware equivalent:
+            # sample analogRead fast, send the max since the last packet.)
+            if st.ir_readings:
+                if ir_peak is None:
+                    ir_peak = list(st.ir_readings)
+                else:
+                    ir_peak = [max(a, b) for a, b in zip(ir_peak, st.ir_readings)]
+        if ir_peak is not None:
+            st.ir_readings = ir_peak
         self._collided_frames += collided
         self._elapsed += self.substeps * self.dt
 

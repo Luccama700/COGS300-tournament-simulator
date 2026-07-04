@@ -47,7 +47,8 @@ def run_episode(env: SimEnv, route, info, fb: FeatureBuilder,
     decision time t and the expert's command for time t.
     """
     obs = env.reset(seed=seed)
-    follower = make_follower(route, info)
+    follower = make_follower(route, info, decision_hz=env.decision_hz,
+                             robot_cfg=env.robot_cfg)
     fb.reset()
 
     rows = []
@@ -56,7 +57,8 @@ def run_episode(env: SimEnv, route, info, fb: FeatureBuilder,
     reached = False
     for _ in range(max_steps):
         feats = fb.build(obs)
-        cmd = follower.command(obs["true_x"], obs["true_y"], obs["true_heading"])
+        cmd = follower.command(obs["true_x"], obs["true_y"], obs["true_heading"],
+                               ir=obs["ir"])
         rows.append(list(map(float, feats)) + [int(cmd)])
         fb.observe_command(cmd)
         obs = env.step(cmd)
@@ -80,6 +82,7 @@ def run_episode(env: SimEnv, route, info, fb: FeatureBuilder,
         "time_s": round(obs["elapsed"], 2),
         "contact_frames": obs["collided_total"],
         "recoveries": follower._recover_count,
+        "line_fallback_frames": follower.fallback_frames,
         "final_dist_to_goal": round(env.dist_to_goal(), 1),
     }
     return rows, metrics

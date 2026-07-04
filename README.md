@@ -244,6 +244,38 @@ Additionally, the bounding-circle collision model made the maze's 20cm slits
 impassable for the 22cm circle even though the real 12cm-wide chassis fits;
 `physics.py` now collides the true oriented rectangle (and models wedging).
 
+### ⚠ Hardware finding: rear-mounted IR sensors cannot track the tape
+
+The strongest result of this work is not about ML at all. With the IR
+sensors at the **back** of the chassis (`robot-config.yaml`, mount_y +0.55),
+even a hand-written controller with direct sensor access loses the tape and
+circles hunting for it — the same "spinning like crazy" the real robot showed:
+
+* A yaw correction swings the rear (where the sensors are) the *wrong way*
+  first, so the robot translates 20-25cm off the tape before the sensors
+  re-cross it (unstable lever arm).
+* Once lost, a hard-turn search sweeps a ~25cm circle — smaller than the
+  distance to the lost tape — so it orbits indefinitely.
+* Measured in sim: a sensor-driven expert needs pose-based rescue ~27s per
+  run with rear sensors, vs ~8s with the same sensors moved to the front.
+
+`configs/robot-config-frontIR.yaml` is identical hardware with the two
+TCRT5000s moved to the chassis front (mount_y −0.55). With front sensors the
+classic 3-state follower (steer toward the hot sensor, straight when quiet,
+one-shot pivot at sharp corners) completes the course 45/45 across all
+randomization presets. **Recommendation: physically move the IR sensors to
+the front of the robot.** The ML pipeline below uses the front-IR config;
+it also runs with the rear config, but the resulting demonstrations lean on
+privileged rescue and clone poorly.
+
+Two firmware notes that matter for matching the sim:
+* Sample `analogRead(IR_*)` fast and report the **max since the last packet**
+  (peak-hold) — at 28cm/s a tape crossing lasts well under one 10Hz packet
+  and a single sample misses it. The sim models peak-hold.
+* The single-channel encoders are direction-blind: during hard turns the
+  reported rotation is ~2× too small and `distanceTraveled` grows while
+  pivoting. The sim replicates this; the spin watchdog accounts for it.
+
 ### Track repairs (v03)
 
 Connectivity analysis showed the digitized tournament track was **unsolvable**:
@@ -258,28 +290,32 @@ differs** (v01/v02 are untouched for reference).
 
 ```bash
 TRACK=configs/tracks/COGS_300_Tournament_Track/COGS_300_Tournament_Track_v03.yaml
+ROBOT=configs/robot-config-frontIR.yaml   # see hardware finding above
 
-# 0. Sanity gate: the privileged expert must reach the goal reliably
-python evaluate_policy.py --track $TRACK --policy expert --episodes 20
+# 0. Sanity gate: the expert must reach the goal reliably
+python evaluate_policy.py --track $TRACK --robot $ROBOT --policy expert --episodes 20
 
 # 1. Generate behavior-cloning data (expert demos in the real sim)
-python generate_data_v2.py --track $TRACK --episodes 200 \
-    --randomization mild --output data/bc_train.csv --workers 4
+python generate_data_v2.py --track $TRACK --robot $ROBOT --episodes 200 \
+    --randomization mild --output data/bc_mild.csv --workers 4
+python generate_data_v2.py --track $TRACK --robot $ROBOT --episodes 100 \
+    --randomization heavy --output data/bc_heavy.csv --workers 4
+python -m training.merge_datasets --out data/bc_train.csv data/bc_mild.csv data/bc_heavy.csv
 
 # 2. Train the command classifier
 python -m training.train --data data/bc_train.csv --out models/policy_bc.npz
 
 # 3. Closed-loop evaluation (the metric that matters)
-python evaluate_policy.py --track $TRACK --policy models/policy_bc.npz \
+python evaluate_policy.py --track $TRACK --robot $ROBOT --policy models/policy_bc.npz \
     --episodes 20 --randomization mild --plot eval_bc.png
 
 # 4. DAgger — retrain on the learner's own mistake states
-python -m training.dagger --track $TRACK --base-data data/bc_train.csv \
+python -m training.dagger --track $TRACK --robot $ROBOT --base-data data/bc_train.csv \
     --iters 3 --episodes-per-iter 40 --out models/policy_dagger.npz
 
 # 5. Final evaluation
-python evaluate_policy.py --track $TRACK --policy models/policy_dagger.npz \
-    --episodes 30 --randomization mild
+python evaluate_policy.py --track $TRACK --robot $ROBOT \
+    --policy models/policy_dagger.npz --episodes 30 --randomization mild
 ```
 
 `policy_runtime.PolicyRuntime` is the deployable inference stack (features →

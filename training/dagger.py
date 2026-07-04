@@ -48,7 +48,8 @@ def rollout_with_expert_labels(env, route, info, model, fb: FeatureBuilder,
         executed cmd = expert w.p. beta else learner  →  history update  →  env.step
     """
     obs = env.reset(seed=seed)
-    follower = make_follower(route, info)
+    follower = make_follower(route, info, decision_hz=env.decision_hz,
+                             robot_cfg=env.robot_cfg)
     fb.reset()
     rng = np.random.default_rng(seed)
 
@@ -58,7 +59,8 @@ def rollout_with_expert_labels(env, route, info, model, fb: FeatureBuilder,
     reached = False
     for _ in range(int(max_time_s * decision_hz)):
         feats = fb.build(obs)
-        expert_cmd = follower.command(obs["true_x"], obs["true_y"], obs["true_heading"])
+        expert_cmd = follower.command(obs["true_x"], obs["true_y"], obs["true_heading"],
+                                      ir=obs["ir"])
         learner_cmd = int(np.argmax(model.predict_proba(feats)))
         cmd = expert_cmd if rng.random() < beta else learner_cmd
 
