@@ -337,8 +337,8 @@ raw model.
 | Policy | Full-course success (mild randomization) | Notes |
 |--------|------------------------------------------|-------|
 | Sensor-driven expert (`--policy expert`) | **15/15 – 20/20** across none/mild/heavy | Tape bang-bang + fire-armed corner pivots + wall-hug transit + maze pursuit; ~118s runs |
-| Behavior cloning (96×96 MLP, 330k rows) | 0/20 | Masters the tape phase (locks through every zigzag vertex), degrades over the ~1200-decision horizon in the maze |
-| + DAgger (mixed rollouts) | up to 5/50 during β=0.15 rollouts; 0/30 for late checkpoints | Mid-loop checkpoints peak, late iterations drown in recovery-state labels |
+| Behavior cloning (96×96 MLP, 336k rows; committed as `models/policy_bc.npz`) | 0/20 | 92.1% balanced per-frame val acc; masters the tape phase (locks through every zigzag vertex), degrades over the ~1200-decision horizon in the maze |
+| + DAgger (mixed rollouts, 3-4 iters × 50 eps) | up to 5/50 during β=0.15 rollouts; 0/15 per checkpoint with guards (best single run: 67cm from goal) | Mid-loop checkpoints peak, late iterations drown in recovery-state labels |
 
 The honest summary: the *system* now works — simulator physics, track, expert
 autopilot, data/train/eval/DAgger infrastructure — and the cloned policy
