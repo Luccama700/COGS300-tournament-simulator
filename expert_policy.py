@@ -433,6 +433,7 @@ class RouteFollower:
         self._streak = 0                     # consecutive same-side hot frames
         self._corners_done: set[int] = set() # one-shot corner pivots consumed
         self._corner_seq = 0                 # frames left in committed pivot
+        self._corner_half = 0                # reacquire-allowed threshold
         self._corner_left = True
         self.fallback_frames = 0             # pose-rescue usage (data quality metric)
 
@@ -564,11 +565,44 @@ class RouteFollower:
         """
         left_hot = ir[0] > self.ir_threshold
         right_hot = ir[1] > self.ir_threshold
+
+        # Committed corner pivot in progress. Fires during the FIRST half are
+        # the tape sweeping under the sensors mid-rotation — keep pivoting.
+        # Fires in the second half mean the tape is reacquired — hand back to
+        # reactive tracking (finishing blind caused circling deadlocks).
+        if self._corner_seq > 0:
+            if (left_hot or right_hot) and self._corner_seq < self._corner_half:
+                self._corner_seq = 0
+            else:
+                self._corner_seq -= 1
+                self._since_fire = 0
+                return CMD_HARD_L if self._corner_left else CMD_HARD_R
+
+        # Corner arming (front mode): inside a corner's approach window the
+        # NEXT tape fire is the vertex graze — the observation-locked trigger
+        # for the pivot. Progress/dist only selects which corner and its
+        # direction; the timing comes from the sensors, so a cloned policy
+        # can reproduce it despite odometry scale error (±2% of 500+cm is
+        # wider than any usable pure-distance window). If the graze never
+        # registers, pivot anyway shortly past the vertex.
+        if self.ir_front:
+            for idx, (s_k, turn_left, deg) in enumerate(self._corners):
+                if idx in self._corners_done:
+                    continue
+                if -12.0 <= s_k - progress <= 14.0:
+                    fired = left_hot or right_hot
+                    past_vertex = progress > s_k + 4.0
+                    if fired or past_vertex:
+                        self._corners_done.add(idx)
+                        self._corner_left = turn_left
+                        n = max(1, int(deg / self._hard_deg_per_frame))
+                        self._corner_seq = n - 1
+                        self._corner_half = n // 2
+                        self._since_fire = 0
+                        return CMD_HARD_L if turn_left else CMD_HARD_R
+                break  # only the nearest un-consumed corner can arm
+
         if left_hot or right_hot:
-            # Tape found — always beats a committed corner pivot (finishing
-            # the pivot blind once the tape is visible caused hard-turn
-            # circling deadlocks pinned by monotonic progress).
-            self._corner_seq = 0
             fire_left = left_hot and (not right_hot or ir[0] >= ir[1])
             if fire_left == self._last_fire_left and self._since_fire == 0:
                 self._streak += 1
@@ -583,24 +617,6 @@ class RouteFollower:
             else:
                 self._sweep = CMD_SLIGHT_L if fire_left else CMD_SLIGHT_R
             return self._sweep
-
-        # Committed corner pivot in progress (quiet sensors)
-        if self._corner_seq > 0:
-            self._corner_seq -= 1
-            self._since_fire = 0
-            return CMD_HARD_L if self._corner_left else CMD_HARD_R
-
-        # Pre-emptive one-shot corner pivot (front mode): sharper than 45°
-        # the tape leaves the sensors' reach almost instantly at speed, so
-        # turn ~the vertex angle open-loop, sized by the corner table.
-        if self.ir_front:
-            for idx, (s_k, turn_left, deg) in enumerate(self._corners):
-                if idx not in self._corners_done and -2.0 <= s_k - progress <= 6.0:
-                    self._corners_done.add(idx)
-                    self._corner_left = turn_left
-                    self._corner_seq = max(1, int(deg / self._hard_deg_per_frame)) - 1
-                    self._since_fire = 0
-                    return CMD_HARD_L if turn_left else CMD_HARD_R
 
         self._since_fire += 1
         if self._since_fire > self._fallback_after:
