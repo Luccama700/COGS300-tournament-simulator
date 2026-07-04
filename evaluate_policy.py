@@ -50,7 +50,8 @@ def evaluate(track_path: str, robot_path: str, physics_path: str,
         runtime = PolicyRuntime(model, decision_hz=decision_hz, enabled=safeguards)
 
     stats = {"success": 0, "times": [], "contacts": [], "spins": 0,
-             "stuck": 0, "timeout": 0, "lost": 0, "final_dists": [], "trajs": []}
+             "stuck": 0, "timeout": 0, "lost": 0, "final_dists": [],
+             "min_dists": [], "trajs": []}
     max_steps = int(max_time_s * decision_hz)
 
     for ep in range(episodes):
@@ -63,6 +64,7 @@ def evaluate(track_path: str, robot_path: str, physics_path: str,
         traj = []
         stall = 0
         outcome = "timeout"
+        min_goal_dist = env.dist_to_goal()
         for _ in range(max_steps):
             if expert_mode:
                 cmd = actor.command(obs["true_x"], obs["true_y"], obs["true_heading"],
@@ -73,6 +75,7 @@ def evaluate(track_path: str, robot_path: str, physics_path: str,
             obs = env.step(cmd)
             if collect_traj:
                 traj.append((obs["true_x"], obs["true_y"]))
+            min_goal_dist = min(min_goal_dist, env.dist_to_goal())
             if env.dist_to_goal() < 5.0:
                 outcome = "success"
                 break
@@ -97,6 +100,7 @@ def evaluate(track_path: str, robot_path: str, physics_path: str,
             stats["times"].append(obs["elapsed"])
         stats["contacts"].append(obs["collided_total"])
         stats["final_dists"].append(env.dist_to_goal())
+        stats["min_dists"].append(min_goal_dist)
         if not expert_mode:
             stats["spins"] += runtime.spin_events
         if collect_traj:
@@ -114,6 +118,7 @@ def evaluate(track_path: str, robot_path: str, physics_path: str,
         "stuck": stats["stuck"], "timeout": stats["timeout"], "lost": stats["lost"],
         "spin_events_total": stats["spins"],
         "median_final_dist": float(np.median(stats["final_dists"])),
+        "median_min_goal_dist": float(np.median(stats["min_dists"])),
     }
     return summary, stats, track
 
