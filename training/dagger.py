@@ -49,7 +49,8 @@ def rollout_with_expert_labels(env, route, info, model, fb: FeatureBuilder,
     """
     obs = env.reset(seed=seed)
     follower = make_follower(route, info, decision_hz=env.decision_hz,
-                             robot_cfg=env.robot_cfg)
+                             robot_cfg=env.robot_cfg,
+                             physics_params=env.base_params)
     fb.reset()
     rng = np.random.default_rng(seed)
 
@@ -103,6 +104,7 @@ def main():
     ap.add_argument("--out", default="models/policy_dagger.npz")
     ap.add_argument("--workdir", default="data/dagger")
     ap.add_argument("--seed", type=int, default=100000)
+    ap.add_argument("--hidden", type=int, nargs=2, default=[96, 96])
     args = ap.parse_args()
 
     os.makedirs(args.workdir, exist_ok=True)
@@ -121,10 +123,11 @@ def main():
     with open(agg_csv) as f:
         next_episode_id = max(int(r.split(",")[-1]) for i, r in enumerate(f) if i > 0) + 1
 
+    hidden_args = ["--hidden", str(args.hidden[0]), str(args.hidden[1])]
     model_path = os.path.join(args.workdir, "policy_iter0.npz")
     print(f"== iter 0: train on base data ==")
     subprocess.run([sys.executable, "-m", "training.train",
-                    "--data", agg_csv, "--out", model_path], check=True)
+                    "--data", agg_csv, "--out", model_path, *hidden_args], check=True)
 
     fb = FeatureBuilder(n_us=len(robot.sensors), n_ir=max(2, len(robot.ir_sensors)))
 
@@ -155,7 +158,7 @@ def main():
         model_path = os.path.join(args.workdir, f"policy_iter{it}.npz")
         print(f"== iter {it}: retrain on aggregate ==")
         subprocess.run([sys.executable, "-m", "training.train",
-                        "--data", agg_csv, "--out", model_path], check=True)
+                        "--data", agg_csv, "--out", model_path, *hidden_args], check=True)
 
     shutil.copyfile(model_path, args.out)
     print(f"\nfinal model: {args.out}")

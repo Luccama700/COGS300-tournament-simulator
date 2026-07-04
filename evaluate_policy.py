@@ -57,7 +57,7 @@ def evaluate(track_path: str, robot_path: str, physics_path: str,
         obs = env.reset(seed=seed + ep)
         if expert_mode:
             actor = make_follower(route, info, decision_hz=decision_hz,
-                                  robot_cfg=robot)
+                                  robot_cfg=robot, physics_params=params)
         else:
             runtime.reset()
         traj = []

@@ -356,7 +356,8 @@ class RouteFollower:
                  lost_escalate_s: float = 2.5,
                  fallback_after_s: float = 6.5,   # room for the 2-phase search
                  decision_hz: float = 10.0,
-                 ir_front: bool = False):
+                 ir_front: bool = False,
+                 hard_turn_dps: float = 188.0):   # hard-turn yaw rate (physics-dependent)
         """
         line_mode_until_cm: while route progress is below this, the expert
         follows the tape with a SENSOR-DRIVEN bang-bang controller instead of
@@ -379,6 +380,7 @@ class RouteFollower:
         self.ir_front = ir_front
         self._lost_escalate = max(1, int(lost_escalate_s * decision_hz))
         self._fallback_after = max(2, int(fallback_after_s * decision_hz))
+        self._hard_deg_per_frame = max(4.0, hard_turn_dps / decision_hz)
         pts = np.asarray(route, dtype=float)
         seg = pts[1:] - pts[:-1]
         seg_len = np.hypot(seg[:, 0], seg[:, 1])
@@ -596,8 +598,7 @@ class RouteFollower:
                 if idx not in self._corners_done and -2.0 <= s_k - progress <= 6.0:
                     self._corners_done.add(idx)
                     self._corner_left = turn_left
-                    # hard turn rotates ~19 deg per decision at 10 Hz
-                    self._corner_seq = max(1, int(deg / 19.0)) - 1
+                    self._corner_seq = max(1, int(deg / self._hard_deg_per_frame)) - 1
                     self._since_fire = 0
                     return CMD_HARD_L if turn_left else CMD_HARD_R
 
@@ -639,21 +640,29 @@ class RouteFollower:
 
 
 def make_follower(route, info: dict, decision_hz: float = 10.0,
-                  robot_cfg=None) -> RouteFollower:
+                  robot_cfg=None, physics_params=None) -> RouteFollower:
     """
     Standard follower construction for data generation / DAgger / evaluation.
     Enables sensor-driven bang-bang tape following for the line phase, so all
     pipeline stages demonstrate the same (observable) behavior. IR mounting
     (front vs rear) is read from the robot config — it changes the stable
-    control law (see RouteFollower._bangbang).
+    control law (see RouteFollower._bangbang). Hard-turn rate is derived from
+    the physics params so corner pivots stay angle-accurate at any BASE_SPEED.
     """
     line_len = info.get("line_len") or 0.0
     ir_front = False
     if robot_cfg is not None and robot_cfg.ir_sensors:
         ir_front = all(s.mount_y < 0 for s in robot_cfg.ir_sensors)
+    hard_dps = 188.0
+    if physics_params is not None and robot_cfg is not None:
+        v = physics_params.max_wheel_speed_cmps / 255.0
+        w_fast = physics_params.base_pwm * v
+        w_slow = -int(physics_params.base_pwm * 0.3) * v
+        hard_dps = math.degrees((w_fast - w_slow) / robot_cfg.chassis.wheelbase_cm)
     return RouteFollower(route, grid=info.get("grid"),
                          line_mode_until_cm=max(0.0, line_len - 20.0),
-                         decision_hz=decision_hz, ir_front=ir_front)
+                         decision_hz=decision_hz, ir_front=ir_front,
+                         hard_turn_dps=hard_dps)
 
 
 # ── CLI: plan a route and plot it ────────────────────────────────────────────

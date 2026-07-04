@@ -48,7 +48,8 @@ def run_episode(env: SimEnv, route, info, fb: FeatureBuilder,
     """
     obs = env.reset(seed=seed)
     follower = make_follower(route, info, decision_hz=env.decision_hz,
-                             robot_cfg=env.robot_cfg)
+                             robot_cfg=env.robot_cfg,
+                             physics_params=env.base_params)
     fb.reset()
 
     rows = []

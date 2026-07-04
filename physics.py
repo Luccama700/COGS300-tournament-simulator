@@ -24,6 +24,7 @@ class PhysicsParams:
     motor_tau: float = 0.08             # motor inertia time constant (seconds)
     left_wheel_eff: float = 1.0         # per-wheel efficiency (cheap motors are asymmetric)
     right_wheel_eff: float = 1.0
+    base_pwm: int = 150                 # firmware BASE_SPEED — command-table base PWM
 
     # Collision
     wall_bounce: float = 0.2
@@ -48,15 +49,20 @@ class PhysicsParams:
 
 
 # Arduino firmware motor command table (mirrors executeCommand() in robot_firmware.ino)
+def build_motor_commands(base_pwm: int = 150) -> dict[int, tuple[int, int]]:
+    """Command table for a given BASE_SPEED (firmware #define)."""
+    return {
+        0: ( base_pwm,                base_pwm),            # forward
+        1: (int(base_pwm * 0.6),      base_pwm),            # slight left
+        2: ( base_pwm,                int(base_pwm * 0.6)), # slight right
+        3: (-int(base_pwm * 0.3),     base_pwm),            # hard left
+        4: ( base_pwm,                -int(base_pwm * 0.3)),# hard right
+        5: (0,                        0),                   # stop
+    }
+
+
 _BASE_PWM = 150  # BASE_SPEED in firmware
-MOTOR_COMMANDS: dict[int, tuple[int, int]] = {
-    0: ( _BASE_PWM,                  _BASE_PWM),           # forward
-    1: (int(_BASE_PWM * 0.6),        _BASE_PWM),           # slight left
-    2: ( _BASE_PWM,                  int(_BASE_PWM * 0.6)),# slight right
-    3: (-int(_BASE_PWM * 0.3),       _BASE_PWM),           # hard left
-    4: ( _BASE_PWM,                  -int(_BASE_PWM * 0.3)),# hard right
-    5: (0,                           0),                    # stop
-}
+MOTOR_COMMANDS: dict[int, tuple[int, int]] = build_motor_commands(_BASE_PWM)
 COMMAND_NAMES = {0: "FORWARD", 1: "SLIGHT LEFT", 2: "SLIGHT RIGHT",
                  3: "HARD LEFT", 4: "HARD RIGHT", 5: "STOP"}
 
@@ -126,6 +132,7 @@ class PhysicsEngine:
         self.sensor_sim = SensorSimulator(noise_profile or HC_SR04_DEFAULT)
         self.track_lines = track_lines or []
         self.ir_sim = IRSensorSimulator()
+        self.motor_commands = build_motor_commands(params.base_pwm)
 
         # Precompute wall segment arrays for fast raycasting
         self._wall_starts = np.array([[w.x1, w.y1] for w in walls], dtype=np.float64)
@@ -152,7 +159,7 @@ class PhysicsEngine:
         state.command = command
 
         # --- Motor command → target PWM (mirrors Arduino executeCommand) ---
-        left_pwm, right_pwm = MOTOR_COMMANDS.get(command, (0, 0))
+        left_pwm, right_pwm = self.motor_commands.get(command, (0, 0))
         state.left_pwm  = left_pwm
         state.right_pwm = right_pwm
 
