@@ -32,9 +32,16 @@ class SensorNoiseProfile:
     # Systematic bias
     bias_cm: float = 0.0              # constant offset added to readings
 
-    # Dropouts
+    # Dropouts — a missed echo on real hardware is a pulseIn() TIMEOUT, which the
+    # firmware maps to max range (200), never 0. See readOneUltrasonic() in
+    # robot_firmware.ino. dropout_value=0.0 in old configs produced readings the
+    # firmware can never send and confused trained policies.
     dropout_chance: float = 0.02      # probability of failed reading per measurement
-    dropout_value: float = 0.0        # what failed reading returns
+    dropout_value: float = 200.0      # what failed reading returns (firmware timeout → 200)
+
+    # Rare spuriously-short readings (multipath / crosstalk between sensors)
+    spurious_chance: float = 0.0      # probability of a bogus short reading
+    spurious_range: tuple = (2.0, 30.0)  # cm — uniform range of bogus readings
 
     # Range limits
     min_range_cm: float = 2.0         # dead zone — objects closer than this return min_range
@@ -67,7 +74,7 @@ def load_noise_profile(path: str | Path) -> SensorNoiseProfile:
         noise_per_cm=sn.get("noise_per_cm", 0.008),
         bias_cm=sn.get("bias_cm", 0.0),
         dropout_chance=sn.get("dropout_chance", 0.02),
-        dropout_value=sn.get("dropout_value", 0.0),
+        dropout_value=sn.get("dropout_value", 200.0),
         min_range_cm=sn.get("min_range_cm", 2.0),
         max_reliable_cm=sn.get("max_reliable_cm", 200.0),
     )
@@ -79,7 +86,8 @@ HC_SR04_DEFAULT = SensorNoiseProfile(
     noise_per_cm=0.008,
     bias_cm=0.0,
     dropout_chance=0.02,
-    dropout_value=0.0,
+    dropout_value=200.0,        # firmware pulseIn timeout → 200, never 0
+    spurious_chance=0.005,      # rare multipath ghost readings
     min_range_cm=2.0,
     max_reliable_cm=200.0,
     beam_half_angle_deg=10.0,   # was 15.0 — effective angle for flat walls in corridors
@@ -92,12 +100,15 @@ HC_SR04_NOISY = SensorNoiseProfile(
     noise_base_std=1.5,
     noise_per_cm=0.015,
     dropout_chance=0.05,
+    dropout_value=200.0,
+    spurious_chance=0.01,
 )
 
 HC_SR04_CLEAN = SensorNoiseProfile(
     noise_base_std=0.2,
     noise_per_cm=0.003,
     dropout_chance=0.01,
+    dropout_value=200.0,
 )
 
 
@@ -127,7 +138,7 @@ class SensorSimulator:
         """
         p = self.profile
 
-        # No object in range
+        # No object in range → echo timeout → firmware reports max range
         if true_distance < 0 or true_distance > p.max_reliable_cm:
             # Far objects sometimes still register with high noise
             if true_distance > 0 and true_distance < p.max_reliable_cm * 1.3:
@@ -135,19 +146,24 @@ class SensorSimulator:
                 excess = (true_distance - p.max_reliable_cm) / (p.max_reliable_cm * 0.3)
                 if random.random() < 0.5 + 0.5 * excess:
                     return p.dropout_value
-                # If it does register, very noisy
+                # If it does register, very noisy (and capped like the firmware caps)
                 noise = random.gauss(0, p.noise_base_std + p.noise_per_cm * true_distance * 3)
-                return max(p.min_range_cm, true_distance + p.bias_cm + noise)
+                return min(p.max_reliable_cm,
+                           max(p.min_range_cm, true_distance + p.bias_cm + noise))
             return p.dropout_value
 
         # Object in dead zone
         if true_distance < p.min_range_cm:
-            # Objects very close return garbage — sometimes min_range, sometimes dropout
+            # Objects very close return garbage — sometimes timeout, sometimes min_range
             if random.random() < 0.3:
                 return p.dropout_value
             return p.min_range_cm + random.gauss(0, 0.5)
 
-        # Random dropout
+        # Spurious short reading (multipath / sensor crosstalk)
+        if p.spurious_chance and random.random() < p.spurious_chance:
+            return random.uniform(*p.spurious_range)
+
+        # Random dropout (missed echo → timeout)
         if random.random() < p.dropout_chance:
             return p.dropout_value
 

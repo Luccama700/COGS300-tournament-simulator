@@ -128,18 +128,30 @@ Open the editor with `python run_test.py --editor`.
 
 ```
 run_test.py             ← main entry point (drive + editor launcher)
-physics.py              ← physics engine (kinematics, collision, raycasting)
+physics.py              ← physics engine (kinematics, oriented-rect collision, raycasting)
 renderer.py             ← Pygame drawing (robot, walls, sensors, HUD)
 robot_config.py         ← robot YAML loader and geometry helpers
 sensor_model.py         ← HC-SR04 ultrasonic noise model
 ir_model.py             ← TCRT5000 IR reflectance model
-track.py                ← track data model (load/save YAML)
+track.py                ← track data model (load/save YAML, line graph + A*)
 track_editor.py         ← interactive track editor
+
+# ── ML pipeline (v2) ──────────────────────────────────────────────
+expert_policy.py        ← privileged expert: route planner + discrete-command follower
+sim_env.py              ← closed-loop sim env with firmware-faithful observations
+policy_runtime.py       ← feature builder + MLP inference + anti-spin safeguards
+generate_data_v2.py     ← training data generation (supersedes generate_line_data.py)
+evaluate_policy.py      ← closed-loop evaluation (success rate, spins, collisions)
+training/
+  train.py              ← numpy MLP trainer (class-balanced, episode-split val)
+  dagger.py             ← DAgger loop (fixes compounding-error drift)
+  dataset.py            ← CSV loading helpers
+  filter_data.py        ← episode-quality filtering (legacy pipeline)
 
 configs/
   robot-config.yaml     ← chassis geometry and sensor layout
   physics.yaml          ← physics and display parameters
-  track.yaml            ← saved track (created by the editor)
+  tracks/               ← saved tracks (v03 = repaired tournament track)
 
 calibration/
   capture.py            ← serial capture tool for Arduino calibration data
@@ -147,6 +159,7 @@ calibration/
 
 arduino/
   hc_sr04_calibration/  ← Arduino sketch for HC-SR04 calibration
+  robot_firmware/       ← robot firmware (WiFi AP + UDP sensor/command loop)
 ```
 
 ---
@@ -212,6 +225,75 @@ Returns a 0–1023 analog value matching real `analogRead()` output:
 Threshold comparison on the Arduino: `if (analogRead(IR_PIN) > threshold)` detects tape.
 
 ---
+
+## Machine learning pipeline (v2)
+
+The original pipeline (`generate_line_data.py` → external training) produced
+models that spun in place and crashed. Post-mortem of that pipeline found five
+compounding causes, all fixed in v2:
+
+| # | Old-pipeline defect | Consequence | v2 fix |
+|---|---------------------|-------------|--------|
+| 1 | The data-gen expert only followed the tape lines, but every track's goal is inside the walled maze — it could never finish, then logged STOP forever | **90.8% of training rows were STOP**, nearly all the rest were turns (0.4% FORWARD) | Hybrid expert: A* over the line network + A* over an inflated occupancy grid through the maze (`expert_policy.py`) |
+| 2 | Expert drove custom continuous-steering kinematics, labels discretized afterwards | Labels unreachable by the firmware's 6 discrete commands; train/test dynamics mismatch | Expert emits the 6 firmware commands directly and drives the real `physics.py` engine |
+| 3 | Features included absolute heading, est_x/est_y, elapsed time | Model memorized one trajectory; any deviation → garbage inputs → compounding errors → spinning | Sensor-only features + short history + IR line-memory + last command (`policy_runtime.FeatureBuilder`) |
+| 4 | Sim ultrasonic dropout returned 0.0cm; firmware returns 200 on timeout; data-gen used a third noise model with no dropouts | Test-time inputs the model never saw during training | One sensor model everywhere; dropouts return max range like the firmware (`sensor_model.py`) |
+| 5 | Single deterministic demonstration, no recovery states | No data for "slightly off the line" states → first error was fatal | Domain randomization (`sim_env.py`) + DAgger (`training/dagger.py`) |
+
+Additionally, the bounding-circle collision model made the maze's 20cm slits
+impassable for the 22cm circle even though the real 12cm-wide chassis fits;
+`physics.py` now collides the true oriented rectangle (and models wedging).
+
+### Track repairs (v03)
+
+Connectivity analysis showed the digitized tournament track was **unsolvable**:
+the goal room was fully sealed, and four phantom cross-walls (double-drawn or
+overshot strokes) sealed the SE room chain, the spiral mouth, the spiral exit,
+and the top corridor. `COGS_300_Tournament_Track_v03.yaml` removes those and
+opens a doorway into the goal antechamber. **The entrance-chicane geometry is a
+reconstruction — check it against the physical track and re-digitize if it
+differs** (v01/v02 are untouched for reference).
+
+### Workflow
+
+```bash
+TRACK=configs/tracks/COGS_300_Tournament_Track/COGS_300_Tournament_Track_v03.yaml
+
+# 0. Sanity gate: the privileged expert must reach the goal reliably
+python evaluate_policy.py --track $TRACK --policy expert --episodes 20
+
+# 1. Generate behavior-cloning data (expert demos in the real sim)
+python generate_data_v2.py --track $TRACK --episodes 200 \
+    --randomization mild --output data/bc_train.csv --workers 4
+
+# 2. Train the command classifier
+python -m training.train --data data/bc_train.csv --out models/policy_bc.npz
+
+# 3. Closed-loop evaluation (the metric that matters)
+python evaluate_policy.py --track $TRACK --policy models/policy_bc.npz \
+    --episodes 20 --randomization mild --plot eval_bc.png
+
+# 4. DAgger — retrain on the learner's own mistake states
+python -m training.dagger --track $TRACK --base-data data/bc_train.csv \
+    --iters 3 --episodes-per-iter 40 --out models/policy_dagger.npz
+
+# 5. Final evaluation
+python evaluate_policy.py --track $TRACK --policy models/policy_dagger.npz \
+    --episodes 30 --randomization mild
+```
+
+`policy_runtime.PolicyRuntime` is the deployable inference stack (features →
+MLP → guards). Its safety guards use only firmware observables, so the same
+class can drive the real robot from the laptop UDP relay:
+probability-margin command switching (anti-dither), low-confidence hold,
+a spin watchdog (sustained one-direction rotation → straight burst), and a
+front-wall reflex. Guards can be disabled (`--no-safeguards`) to measure the
+raw model.
+
+Note on odometry: the firmware's single-channel encoders are direction-blind,
+so during hard turns (one wheel reversed) reported rotation is ~2× too small
+and `distanceTraveled` grows even when pivoting in place. `sim_env.py`
+replicates this bug faithfully, and the spin watchdog is calibrated for it.
 
 ## Robot configurator app
 

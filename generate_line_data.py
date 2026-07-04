@@ -403,6 +403,7 @@ class OptimalLineFollower:
         log_interval = 3
         reached_goal = False
         off_line_frames = 0
+        stopped_steps = 0  # consecutive steps commanding stop (waypoints exhausted)
         steering_magnitudes: list[float] = []
         max_deviation = 0.0
 
@@ -415,7 +416,9 @@ class OptimalLineFollower:
 
                 # Quality metrics (measured every step, not just logged steps)
                 _, nearest_dist = self.track.nearest_line_segment(state.x, state.y)
-                if nearest_dist > self.track.line_paths[0].width_cm / 2 if self.track.line_paths else 5.0:
+                off_threshold = (self.track.line_paths[0].width_cm / 2
+                                 if self.track.line_paths else 5.0)
+                if nearest_dist > off_threshold:
                     off_line_frames += 1
                 max_deviation = max(max_deviation, nearest_dist)
                 steering_magnitudes.append(abs(cmd.steering))
@@ -442,6 +445,18 @@ class OptimalLineFollower:
                 if nearest_dist > 50.0:
                     print(f"  ep{episode}: too far from line at step {step_i}, stopping.")
                     break
+
+                # End the episode shortly after the controller stops (waypoints
+                # exhausted). Previously this ran to max_steps logging thousands
+                # of STOP rows per episode — 90%+ of the dataset was STOP.
+                if abs(cmd.throttle) < 0.05 and abs(cmd.steering) < 0.05:
+                    stopped_steps += 1
+                    if stopped_steps > 30:  # ~0.5s of stop frames is plenty
+                        print(f"  ep{episode}: controller stopped at step {step_i} "
+                              f"(end of waypoints), ending episode.")
+                        break
+                else:
+                    stopped_steps = 0
         finally:
             if own_file:
                 own_file.close()

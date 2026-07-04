@@ -22,6 +22,8 @@ class PhysicsParams:
     # Motor model (matching Arduino firmware)
     max_wheel_speed_cmps: float = 60.0  # cm/s at PWM=255; BASE_SPEED=150 → ~35 cm/s
     motor_tau: float = 0.08             # motor inertia time constant (seconds)
+    left_wheel_eff: float = 1.0         # per-wheel efficiency (cheap motors are asymmetric)
+    right_wheel_eff: float = 1.0
 
     # Collision
     wall_bounce: float = 0.2
@@ -110,6 +112,9 @@ class RobotState:
     sensor_readings: list[float] = field(default_factory=list)
     ir_readings: list[float] = field(default_factory=list)
 
+    # True when the last physics step was obstructed by a wall (slid or stalled)
+    wall_contact: bool = False
+
 
 # --- Physics step -----------------------------------------------------------
 
@@ -152,8 +157,8 @@ class PhysicsEngine:
         state.right_pwm = right_pwm
 
         # --- PWM → target wheel speed (cm/s, signed) ---
-        target_left  = left_pwm  / 255.0 * p.max_wheel_speed_cmps
-        target_right = right_pwm / 255.0 * p.max_wheel_speed_cmps
+        target_left  = left_pwm  / 255.0 * p.max_wheel_speed_cmps * p.left_wheel_eff
+        target_right = right_pwm / 255.0 * p.max_wheel_speed_cmps * p.right_wheel_eff
 
         # --- Motor inertia: first-order lag (τ = motor_tau seconds) ---
         alpha = 1.0 - math.exp(-dt / p.motor_tau) if p.motor_tau > 0 else 1.0
@@ -166,32 +171,44 @@ class PhysicsEngine:
         d_center = (d_left + d_right) / 2.0
         d_theta  = (d_right - d_left) / self.robot_cfg.chassis.wheelbase_cm  # radians
 
-        state.heading = (state.heading + math.degrees(d_theta)) % 360.0
-        state.speed   = d_center / dt if dt > 0 else 0.0
+        new_heading = (state.heading + math.degrees(d_theta)) % 360.0
+        state.speed = d_center / dt if dt > 0 else 0.0
 
-        rad  = math.radians(state.heading)
+        rad  = math.radians(new_heading)
         new_x = state.x + math.cos(rad) * d_center
         new_y = state.y - math.sin(rad) * d_center  # screen Y inverted
 
-        # --- Collision ---
-        margin = p.collision_margin + max(self.robot_cfg.half_length, self.robot_cfg.half_width)
-        if self._check_collision(new_x, new_y, margin):
-            # Try sliding along each axis independently
-            if not self._check_collision(new_x, state.y, margin):
-                state.x = new_x
-                state.left_wheel_speed  *= p.wall_slide_friction
-                state.right_wheel_speed *= p.wall_slide_friction
-            elif not self._check_collision(state.x, new_y, margin):
-                state.y = new_y
-                state.left_wheel_speed  *= p.wall_slide_friction
-                state.right_wheel_speed *= p.wall_slide_friction
-            else:
-                # Full stall — wheels bounce back slightly
-                state.left_wheel_speed  *= -p.wall_bounce
-                state.right_wheel_speed *= -p.wall_bounce
-        else:
+        # --- Collision (oriented chassis rectangle vs wall segments) ---
+        # The tournament maze has 20cm slits that the 12cm-wide chassis must
+        # drive through lengthwise; the old bounding-circle test (22cm diameter)
+        # made them impassable.
+        state.wall_contact = True
+        if not self._rect_collides(new_x, new_y, new_heading):
             state.x = new_x
             state.y = new_y
+            state.heading = new_heading
+            state.wall_contact = False
+        elif not self._rect_collides(new_x, state.y, new_heading):
+            # Slide along x
+            state.x = new_x
+            state.heading = new_heading
+            state.left_wheel_speed  *= p.wall_slide_friction
+            state.right_wheel_speed *= p.wall_slide_friction
+        elif not self._rect_collides(state.x, new_y, new_heading):
+            # Slide along y
+            state.y = new_y
+            state.heading = new_heading
+            state.left_wheel_speed  *= p.wall_slide_friction
+            state.right_wheel_speed *= p.wall_slide_friction
+        elif not self._rect_collides(state.x, state.y, new_heading):
+            # Position blocked but rotation in place is clear (pivot off a wall)
+            state.heading = new_heading
+            state.left_wheel_speed  *= p.wall_slide_friction
+            state.right_wheel_speed *= p.wall_slide_friction
+        else:
+            # Fully wedged — wheels bounce back slightly, pose unchanged
+            state.left_wheel_speed  *= -p.wall_bounce
+            state.right_wheel_speed *= -p.wall_bounce
 
         # --- Sensor update ---
         state.sensor_readings = self._read_sensors(state)
@@ -211,6 +228,42 @@ class PhysicsEngine:
         closest = self._wall_starts + t[:, np.newaxis] * ab
         dists = np.sqrt(np.sum((point - closest) ** 2, axis=1))
         return bool(np.any(dists < radius))
+
+    def _rect_collides(self, x: float, y: float, heading_deg: float) -> bool:
+        """
+        Check the robot's oriented chassis rectangle (plus collision_margin)
+        against all wall segments. Walls are transformed into the robot frame,
+        then clipped against the axis-aligned chassis box (Liang-Barsky).
+        """
+        if len(self.walls) == 0:
+            return False
+        hl = self.robot_cfg.half_length + self.params.collision_margin
+        hw = self.robot_cfg.half_width + self.params.collision_margin
+
+        rad = math.radians(heading_deg)
+        c, s = math.cos(rad), math.sin(rad)
+        # Robot axes in world coords (screen y inverted, same math as
+        # robot_config.sensor_world_position): forward u=(c,-s), right v=(s,c)
+        p1 = self._wall_starts - (x, y)
+        p2 = self._wall_ends - (x, y)
+        a1 = p1[:, 0] * c - p1[:, 1] * s   # forward component of wall start
+        b1 = p1[:, 0] * s + p1[:, 1] * c   # right component
+        a2 = p2[:, 0] * c - p2[:, 1] * s
+        b2 = p2[:, 0] * s + p2[:, 1] * c
+
+        da, db = a2 - a1, b2 - b1
+        t0 = np.zeros_like(a1)
+        t1 = np.ones_like(a1)
+        ok = np.ones_like(a1, dtype=bool)
+        for p, q in ((-da, a1 + hl), (da, hl - a1), (-db, b1 + hw), (db, hw - b1)):
+            zero = np.abs(p) < 1e-12
+            ok &= ~(zero & (q < 0))          # parallel and fully outside slab
+            safe_p = np.where(zero, 1.0, p)
+            t = q / safe_p
+            t0 = np.where((p < 0) & ~zero, np.maximum(t0, t), t0)
+            t1 = np.where((p > 0) & ~zero, np.minimum(t1, t), t1)
+        ok &= t0 <= t1
+        return bool(ok.any())
 
     def _read_sensors(self, state: RobotState) -> list[float]:
         """Raycast all sensors and apply noise."""
