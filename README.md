@@ -268,13 +268,19 @@ the front of the robot.** The ML pipeline below uses the front-IR config;
 it also runs with the rear config, but the resulting demonstrations lean on
 privileged rescue and clone poorly.
 
-Two firmware notes that matter for matching the sim:
+Three firmware changes are required to match the sim (all small):
 * Sample `analogRead(IR_*)` fast and report the **max since the last packet**
   (peak-hold) — at 28cm/s a tape crossing lasts well under one 10Hz packet
   and a single sample misses it. The sim models peak-hold.
-* The single-channel encoders are direction-blind: during hard turns the
-  reported rotation is ~2× too small and `distanceTraveled` grows while
-  pivoting. The sim replicates this; the spin watchdog accounts for it.
+* **Sign the encoder tick deltas by the commanded wheel direction** in
+  `updateOdometry()` (`executeCommand` knows each wheel's direction). The
+  single-channel encoders are direction-blind, so stock firmware corrupts
+  heading by ~50% of every hard turn and inflates `distanceTraveled` while
+  pivoting — which makes all dead-reckoning features (and the policy's
+  heading input) unusable. The sim integrates signed wheel travel.
+* Read the three HC-SR04s without the blocking `delay(60)` calls (staggered
+  pings or echo-pin interrupts) so the control loop can run at ~10Hz instead
+  of ~5Hz.
 
 ### Track repairs (v03)
 
@@ -326,10 +332,9 @@ a spin watchdog (sustained one-direction rotation → straight burst), and a
 front-wall reflex. Guards can be disabled (`--no-safeguards`) to measure the
 raw model.
 
-Note on odometry: the firmware's single-channel encoders are direction-blind,
-so during hard turns (one wheel reversed) reported rotation is ~2× too small
-and `distanceTraveled` grows even when pivoting in place. `sim_env.py`
-replicates this bug faithfully, and the spin watchdog is calibrated for it.
+Note on odometry: the sim integrates signed wheel travel for heading and
+distance, which corresponds to the signed-tick firmware fix described above.
+The raw `enc_l`/`enc_r` counters remain direction-blind like the hardware.
 
 ## Robot configurator app
 

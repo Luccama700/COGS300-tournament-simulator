@@ -90,7 +90,8 @@ class FeatureBuilder:
             names += [f"ir{i}_t{h}" for i in range(self.n_ir)]
         names += [f"ir{i}_mem" for i in range(self.n_ir)]
         names += [f"lastcmd_{c}" for c in range(N_COMMANDS)]
-        names += ["turn_accum", "heading_rate", "speed", "distance"]
+        names += ["turn_accum", "heading_rate", "heading_sin", "heading_cos",
+                  "speed", "distance"]
         return names
 
     def build(self, obs: dict) -> np.ndarray:
@@ -134,6 +135,15 @@ class FeatureBuilder:
         feats.append(max(-1.5, min(1.5, self._turn_accum / 180.0)))
         feats.append(max(-1.5, min(1.5, sum(self._rate_hist)
                                     / (len(self._rate_hist) * 30.0))))
+        # Course-relative direction from (signed-encoder) odometry heading.
+        # On a fixed tournament course this tells the policy which leg it is
+        # on / which way it currently points — the signal that finally
+        # disambiguates "IR fired on the left" between opposite maneuvers.
+        # Requires the signed-tick firmware odometry (see sim_env.py note);
+        # start-heading randomization keeps the model from over-trusting it.
+        rad = math.radians(h)
+        feats.append(math.sin(rad))
+        feats.append(math.cos(rad))
         feats.append(min(2.0, obs.get("speed", 0.0) / SPEED_NORM))
         feats.append(min(4.0, obs.get("distance", 0.0) / DIST_NORM))
         return np.asarray(feats, dtype=np.float32)

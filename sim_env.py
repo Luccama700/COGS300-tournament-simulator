@@ -165,10 +165,14 @@ class SimEnv:
         wheel_r_cm = 0.0
         collided = 0
         ir_peak = None
+        wheel_l_signed = 0.0
+        wheel_r_signed = 0.0
         for _ in range(self.substeps):
             self.engine.step(st, cmd, self.dt)
             wheel_l_cm += abs(st.left_wheel_speed) * self.dt
             wheel_r_cm += abs(st.right_wheel_speed) * self.dt
+            wheel_l_signed += st.left_wheel_speed * self.dt
+            wheel_r_signed += st.right_wheel_speed * self.dt
             if st.wall_contact:
                 collided += 1
             # Peak-hold IR across the decision window: a tape crossing lasts
@@ -185,15 +189,18 @@ class SimEnv:
         self._collided_frames += collided
         self._elapsed += self.substeps * self.dt
 
-        # ── Encoder odometry (mirrors firmware updateOdometry exactly) ────
-        # Single-channel encoders count ticks regardless of wheel DIRECTION,
-        # so during hard turns (one wheel reversed) the firmware's heading
-        # integration is systematically wrong — replicate that faithfully.
+        # ── Encoder odometry ──────────────────────────────────────────────
+        # Raw tick counters stay direction-blind (single-channel encoders),
+        # but heading/distance integrate SIGNED wheel travel. REQUIRED
+        # firmware change to match: updateOdometry() must sign each tick
+        # delta by the commanded wheel direction (executeCommand knows it) —
+        # without that, every hard turn corrupts heading by ~50% of the
+        # rotation and dead-reckoning features are unusable.
         self._enc_l += int(round(wheel_l_cm * TICKS_PER_CM * self._enc_scale))
         self._enc_r += int(round(wheel_r_cm * TICKS_PER_CM * self._enc_scale))
-        d_center = (wheel_l_cm + wheel_r_cm) / 2.0
-        self._odom_dist += d_center * self._enc_scale
-        d_theta = (wheel_r_cm - wheel_l_cm) * self._enc_scale \
+        d_center = (wheel_l_signed + wheel_r_signed) / 2.0
+        self._odom_dist += abs(d_center) * self._enc_scale
+        d_theta = (wheel_r_signed - wheel_l_signed) * self._enc_scale \
             / self.robot_cfg.chassis.wheelbase_cm
         drift = (self.rng.gauss(0, self.rand.odom_heading_drift)
                  if self.rand.odom_heading_drift else 0.0)
