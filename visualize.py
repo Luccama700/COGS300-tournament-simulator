@@ -33,7 +33,7 @@ from track import load_track
 from robot_config import load_robot_config
 from physics import load_physics_params, COMMAND_NAMES
 from expert_policy import build_route, make_follower, CMD_STOP
-from policy_runtime import MLPPolicy, PolicyRuntime
+from policy_runtime import load_policy, PolicyRuntime
 from sim_env import SimEnv, RANDOMIZATION_PRESETS
 from renderer import Renderer
 
@@ -63,7 +63,7 @@ def main():
     route, info = build_route(track)          # for the drawn intent line
     model = None
     if not expert_mode:
-        model = MLPPolicy.load(args.policy)
+        model = load_policy(args.policy)
 
     guards_on = not args.no_safeguards
 
