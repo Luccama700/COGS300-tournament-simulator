@@ -12,6 +12,15 @@ attempt paid for (docs/lessons/dagger-keep-last-collapse.md):
   3. CONTROLLED base:recovery ratio. Recovery (rollout-labeled) rows are
      capped at a fraction of the aggregate so late iterations don't drown
      the clean demonstrations in flailing states.
+  4. EXPERT-PREFIX coverage. A weak learner's rollouts never reach the late
+     course, so DAgger never collects corrections there (measured: beta
+     0.25 -> 11/50 rollouts complete; beta 0.125 -> 0/50, i.e. zero
+     late-course coverage). For a fraction of episodes the expert drives to
+     a random arc while the runtime OBSERVES (features + hidden state
+     advanced on executed commands — hidden-state-consistent, see
+     docs/lessons/segment-eval-needs-warm-hidden-state.md), then the mixed
+     policy continues. Prefix rows are recorded too (plain BC rows), so
+     training sequences stay contiguous from the episode start.
 
 Also GRU-specific: the learner carries hidden state; rollouts reset it per
 episode and step it exactly like deployment (PolicyRuntime.reset()/step()).
@@ -45,7 +54,7 @@ def _rollout_chunk(job):
     """Roll out the guarded learner with beta-mixed expert actions; label
     every visited state with the expert. Returns per-episode (X, y, info)."""
     (track_path, robot_path, phys_path, model_path, seeds, beta,
-     randomization, max_time, decision_hz) = job
+     randomization, max_time, decision_hz, prefix_prob) = job
     track = load_track(track_path)
     robot = load_robot_config(robot_path)
     params, _ = load_physics_params(phys_path)
@@ -62,6 +71,9 @@ def _rollout_chunk(job):
                                  robot_cfg=robot, physics_params=params)
         runtime.reset()
         rng = np.random.default_rng(seed)
+        # Repair #4: expert-driven prefix to a random arc for coverage
+        handover = (rng.uniform(0.15, 0.9) * follower.total
+                    if rng.random() < prefix_prob else 0.0)
         X, y = [], []
         stall = 0
         stop_frames = 0
@@ -74,7 +86,10 @@ def _rollout_chunk(job):
             guarded = runtime._guard(obs, probs)
             expert_cmd = follower.command(obs["true_x"], obs["true_y"],
                                           obs["true_heading"], ir=obs["ir"])
-            exec_cmd = expert_cmd if rng.random() < beta else guarded
+            if follower.progress < handover:
+                exec_cmd = expert_cmd            # expert-driven prefix
+            else:
+                exec_cmd = expert_cmd if rng.random() < beta else guarded
             runtime._cmd = exec_cmd
             runtime.fb.observe_command(exec_cmd)
 
@@ -116,8 +131,11 @@ def main():
                          "(skips the iter-0 retrain)")
     ap.add_argument("--iters", type=int, default=4)
     ap.add_argument("--episodes-per-iter", type=int, default=50)
-    ap.add_argument("--beta0", type=float, default=0.25)
-    ap.add_argument("--beta-decay", type=float, default=0.5)
+    ap.add_argument("--beta0", type=float, default=0.2)
+    ap.add_argument("--beta-decay", type=float, default=0.7)
+    ap.add_argument("--prefix-prob", type=float, default=0.5,
+                    help="Fraction of rollouts that start with an expert-"
+                         "driven prefix to a random arc (repair #4)")
     ap.add_argument("--recovery-frac", type=float, default=0.4,
                     help="Max fraction of training rows from rollouts "
                          "(repair #3: base:recovery ratio)")
@@ -168,8 +186,10 @@ def main():
                                seed=args.select_seed,
                                randomization=args.randomization)
         best_global = (score_key(res0), model_path, res0, 0)
+    arc0 = (100.0 * res0["median_max_arc"] / res0["route_total"]
+            if res0.get("route_total") else 0.0)
     print(f"  init closed-loop: {res0['success']}/{res0['episodes']} "
-          f"median_min={res0['median_min_goal_dist']:.0f}cm")
+          f"arc={arc0:.0f}% median_min={res0['median_min_goal_dist']:.0f}cm")
     log.append({"iter": 0, "model": model_path, **res0})
 
     for it in range(1, args.iters + 1):
@@ -180,7 +200,7 @@ def main():
         w = max(1, min(args.rollout_workers, len(seeds)))
         jobs = [(args.track, args.robot, args.physics, model_path,
                  seeds[i::w], beta, args.randomization, args.max_time,
-                 args.decision_hz) for i in range(w)]
+                 args.decision_hz, args.prefix_prob) for i in range(w)]
         if w == 1:
             chunks = [_rollout_chunk(jobs[0])]
         else:
@@ -220,8 +240,10 @@ def main():
         # Repair #2: keep-best (the winner drives the NEXT rollouts too)
         if key > best_global[0]:
             best_global = (key, path, res, it)
+            arcb = (100.0 * res["median_max_arc"] / res["route_total"]
+                    if res.get("route_total") else 0.0)
             print(f"  ** new global best (iter {it}): "
-                  f"{res['success']}/{res['episodes']} "
+                  f"{res['success']}/{res['episodes']} arc={arcb:.0f}% "
                   f"median_min={res['median_min_goal_dist']:.0f}cm")
         model_path = best_global[1]
 

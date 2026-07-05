@@ -43,6 +43,8 @@ def _eval_chunk(job):
         "lost": summary["lost"],
         "spin_events": summary["spin_events_total"],
         "min_dists": stats["min_dists"],
+        "max_arcs": stats["max_arcs"],
+        "route_total": summary["route_total"],
         "times": stats["times"],
     }
 
@@ -71,15 +73,19 @@ def run_closed_loop(policy_path: str, track: str = TRACK_DEFAULT,
             results = pool.map(_eval_chunk, jobs)
 
     min_dists = sorted(d for r in results for d in r["min_dists"])
+    max_arcs = sorted(a for r in results for a in r["max_arcs"])
     times = [t for r in results for t in r["times"]]
     n = sum(r["episodes"] for r in results)
     succ = sum(r["success"] for r in results)
     mid = min_dists[len(min_dists) // 2] if min_dists else float("nan")
+    marc = max_arcs[len(max_arcs) // 2] if max_arcs else 0.0
     return {
         "episodes": n,
         "success": succ,
         "success_rate": succ / n,
         "median_min_goal_dist": mid,
+        "median_max_arc": marc,
+        "route_total": results[0].get("route_total", 0.0),
         "stuck": sum(r["stuck"] for r in results),
         "timeout": sum(r["timeout"] for r in results),
         "lost": sum(r["lost"] for r in results),
@@ -92,8 +98,14 @@ def run_closed_loop(policy_path: str, track: str = TRACK_DEFAULT,
 
 
 def score_key(result: dict):
-    """Sort key: more successes first, then smaller closest-approach."""
-    return (result["success"], -result["median_min_goal_dist"])
+    """
+    Sort key: successes, then median max route-arc reached, then smaller
+    closest-approach. Euclidean goal distance alone is misleading on this
+    folded course (docs/lessons/segment-eval-needs-warm-hidden-state.md).
+    Results from before the max-arc metric existed rank by the old pair.
+    """
+    return (result["success"], result.get("median_max_arc", 0.0),
+            -result["median_min_goal_dist"])
 
 
 def main():

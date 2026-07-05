@@ -254,7 +254,10 @@ def train_gru_core(episodes, schema: dict, ckpt_dir: str,
             if best is None or key > best[0]:
                 best = (key, epoch, path, res)
                 star = "  ** new best"
+            arcpct = (100.0 * res["median_max_arc"] / res["route_total"]
+                      if res.get("route_total") else 0.0)
             msg += (f"  val_bal={bal:.3f}  CLOSED-LOOP: {res['success']}/{res['episodes']}"
+                    f" arc={arcpct:.0f}%"
                     f" median_min={res['median_min_goal_dist']:.0f}cm"
                     f" spins={res['spin_events']}{star}")
         print(msg, flush=True)

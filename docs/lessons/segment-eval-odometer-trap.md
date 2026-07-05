@@ -14,5 +14,9 @@ environment's accumulated odometry distance to that arc length (± the usual
 noise). Then per-segment success is meaningful and the weakest segment can
 be targeted with extra training starts.
 
-Status: not yet built (as of 2026-07-05). This note exists so the trap is
-avoided on first implementation.
+Status: built 2026-07-04 as `training/segment_eval.py` (SimEnv gained
+`start_pose`/`odom_init`; odometer values calibrated per segment from expert
+runs — measured *lower* than route arc because the robot rounds vertices).
+Expert passes 4/4 from every teleport spawn, so the trap is handled. For
+recurrent policies teleport spawns are still invalid for a second reason —
+see segment-eval-needs-warm-hidden-state.md (`--prefix` mode).

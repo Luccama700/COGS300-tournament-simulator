@@ -31,6 +31,42 @@ from policy_runtime import load_policy, PolicyRuntime
 from sim_env import SimEnv, RANDOMIZATION_PRESETS
 
 
+class ArcTracker:
+    """
+    Monotonic max route-arc tracker (privileged pose; EVAL METRIC ONLY).
+
+    Why: euclidean distance-to-goal is non-monotonic on this folded course
+    (the tape passes near the goal chamber), so "median closest approach"
+    ranks a tape death above a mid-maze death. Max arc-length reached along
+    the expert route is the honest progress signal
+    (docs/lessons/segment-eval-needs-warm-hidden-state.md).
+    """
+
+    def __init__(self, route):
+        self.pts = np.asarray(route, dtype=float)
+        seg = self.pts[1:] - self.pts[:-1]
+        self.seg_len = np.hypot(seg[:, 0], seg[:, 1])
+        self.cum = np.concatenate([[0.0], np.cumsum(self.seg_len)])
+        self.total = float(self.cum[-1])
+        self.s = 0.0
+
+    def update(self, x: float, y: float, back: float = 40.0,
+               fwd: float = 80.0, snap: float = 30.0) -> float:
+        lo = max(0, int(np.searchsorted(self.cum, self.s - back)) - 1)
+        hi = min(len(self.seg_len), int(np.searchsorted(self.cum, self.s + fwd)) + 1)
+        if hi <= lo:
+            return self.s
+        P = self.pts[lo:hi]
+        D = self.pts[lo + 1:hi + 1] - P
+        L2 = np.maximum((D * D).sum(1), 1e-12)
+        t = np.clip(((x - P[:, 0]) * D[:, 0] + (y - P[:, 1]) * D[:, 1]) / L2, 0.0, 1.0)
+        d2 = (P[:, 0] + t * D[:, 0] - x) ** 2 + (P[:, 1] + t * D[:, 1] - y) ** 2
+        i = int(np.argmin(d2))
+        if d2[i] < snap * snap:   # only advance while actually near the route
+            self.s = max(self.s, float(self.cum[lo + i] + t[i] * self.seg_len[lo + i]))
+        return self.s
+
+
 def evaluate(track_path: str, robot_path: str, physics_path: str,
              policy_path: str, episodes: int = 20, randomization: str = "mild",
              decision_hz: float = 10.0, max_time_s: float = 150.0,
@@ -43,16 +79,16 @@ def evaluate(track_path: str, robot_path: str, physics_path: str,
                  randomization=randomization)
 
     expert_mode = policy_path == "expert"
-    if expert_mode:
-        route, info = build_route(track)
-    else:
+    route, info = build_route(track)
+    if not expert_mode:
         model = load_policy(policy_path)
         runtime = PolicyRuntime(model, decision_hz=decision_hz, enabled=safeguards)
 
     stats = {"success": 0, "times": [], "contacts": [], "spins": 0,
              "stuck": 0, "timeout": 0, "lost": 0, "final_dists": [],
-             "min_dists": [], "trajs": []}
+             "min_dists": [], "max_arcs": [], "trajs": []}
     max_steps = int(max_time_s * decision_hz)
+    route_total = ArcTracker(route).total
 
     for ep in range(episodes):
         obs = env.reset(seed=seed + ep)
@@ -65,6 +101,7 @@ def evaluate(track_path: str, robot_path: str, physics_path: str,
         stall = 0
         outcome = "timeout"
         min_goal_dist = env.dist_to_goal()
+        arc = ArcTracker(route)
         for _ in range(max_steps):
             if expert_mode:
                 cmd = actor.command(obs["true_x"], obs["true_y"], obs["true_heading"],
@@ -73,6 +110,7 @@ def evaluate(track_path: str, robot_path: str, physics_path: str,
                 cmd = runtime.step(obs)
             prev = (obs["true_x"], obs["true_y"])
             obs = env.step(cmd)
+            arc.update(obs["true_x"], obs["true_y"])
             if collect_traj:
                 traj.append((obs["true_x"], obs["true_y"]))
             min_goal_dist = min(min_goal_dist, env.dist_to_goal())
@@ -101,6 +139,7 @@ def evaluate(track_path: str, robot_path: str, physics_path: str,
         stats["contacts"].append(obs["collided_total"])
         stats["final_dists"].append(env.dist_to_goal())
         stats["min_dists"].append(min_goal_dist)
+        stats["max_arcs"].append(arc.s)
         if not expert_mode:
             stats["spins"] += runtime.spin_events
         if collect_traj:
@@ -108,6 +147,7 @@ def evaluate(track_path: str, robot_path: str, physics_path: str,
         if verbose:
             extra = "" if expert_mode else f"  spins={runtime.spin_events}"
             print(f"  ep{ep:02d}: {outcome:8s} t={obs['elapsed']:6.1f}s "
+                  f"arc={100 * arc.s / route_total:3.0f}% "
                   f"dist_to_goal={env.dist_to_goal():6.1f} contacts={obs['collided_total']:5d}{extra}")
 
     n = episodes
@@ -119,6 +159,8 @@ def evaluate(track_path: str, robot_path: str, physics_path: str,
         "spin_events_total": stats["spins"],
         "median_final_dist": float(np.median(stats["final_dists"])),
         "median_min_goal_dist": float(np.median(stats["min_dists"])),
+        "median_max_arc": float(np.median(stats["max_arcs"])),
+        "route_total": route_total,
     }
     return summary, stats, track
 

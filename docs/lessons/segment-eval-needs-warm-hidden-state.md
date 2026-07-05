@@ -1,23 +1,36 @@
-**Teleport segment-starts are only valid for feedforward policies — a recurrent policy spawned mid-route with h=0 is off-manifold and fails in ways that say nothing about its real weakness.**
+**Teleport and expert-prefix segment starts agree for our GRU (validated 2026-07-04) — and the scarier-looking teleport numbers were a metric artifact: `min_goal_dist` is misleading on a folded course. Judge progress by max route-arc reached, not euclidean goal distance.**
 
-Measured (2026-07-04): GRU v1 from teleport spawns scored 0/6 at every
-segment with all-stuck outcomes, and *later* spawns scored worse than the
-course start (median closest 519 cm from maze_1of4 vs 217 cm from start) —
-while full-course runs of the same model routinely passed those arcs. In
-training the hidden state at arc s always carries the whole history since
-episode start; h=0 paired with a mid-course odometer value is a feature
-combination that never occurs, so the eval measures the mismatch, not the
-policy.
+What happened, in order:
 
-The odometer-init fix (docs/lessons/segment-eval-odometer-trap.md) is
-necessary but NOT sufficient once the policy has internal memory.
+1. GRU v1 teleport segment eval read 0/6 everywhere with *later* spawns
+   scoring worse (median closest 519 cm from maze_1of4 vs 217 cm from
+   start). First interpretation: h=0 + mid-course odometer is off-manifold
+   for a recurrent net.
+2. Built the control: `--prefix` mode in `training/segment_eval.py` — the
+   expert drives to the arc while the policy runtime observes every step
+   (features, hidden state, observe_command), then control hands over. The
+   hidden state at handover is training-identical by construction.
+3. Prefix results matched teleport almost exactly (520 vs 519 cm at
+   maze_1of4; 281 vs 281 at tape_end). The cold-start hypothesis was
+   FALSE for this model — its effective memory horizon is short enough
+   that h converges from the feature stream within a segment.
 
-Fix for recurrent policies: **expert-prefix evaluation** — the expert drives
-from the course start to the target arc while the policy's runtime observes
-every step (features built, hidden state advanced, `observe_command` with
-the expert's executed command), then control hands over. The hidden state at
-handover is then history-consistent, and per-segment numbers mean what they
-claim. Implemented as `--prefix` in `training/segment_eval.py`.
+The real explanations:
 
-Teleport mode remains fine for MLPs (verified: expert 4/4 from every
-teleport spawn — the plant and odometry init are sound).
+- The policy simply dies fast in the maze wherever it starts (confirmed by
+  two independent eval modes) — the maze is the weakness, full stop.
+- "Later spawn = larger min_goal_dist" happens because the course is
+  folded: the tape passes euclidean-close to the goal chamber, so dying on
+  the tape reads ~215 cm while dying instantly at 53% arc reads ~520 cm.
+  Corollary: every historical "median closest ~216 cm" number in this repo
+  most likely means "died on the tape near the fold", NOT "got most of the
+  way there".
+
+Consequences (implemented):
+
+- `evaluate_policy.py` tracks **max route-arc reached** (monotonic windowed
+  projection, privileged, metric-only) and reports it per episode and as
+  `median_max_arc`; `training/closed_loop.score_key` ranks checkpoints by
+  (success, median_max_arc, −median_min_goal_dist). Success still dominates.
+- Keep `--prefix` for future models with longer memory horizons: if prefix
+  and teleport ever disagree, trust prefix.
