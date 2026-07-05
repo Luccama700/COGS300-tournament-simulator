@@ -263,11 +263,18 @@ class PolicyRuntime:
     # still increases and reported rotation is ~2x too small. The watchdog
     # therefore uses ONLY sustained same-direction heading accumulation,
     # with a threshold calibrated to the odometry's underestimation.
+    # spin_turn_deg calibration (2026-07-04): 250 false-tripped on the tape
+    # zigzag's back-to-back same-direction corners (2 x ~135 deg inside one
+    # 3 s window) — measured 215 trips / 10 mild episodes on the GRU policy,
+    # each trip's forced-FORWARD burst throwing the robot off the line
+    # (guards-on scored WORSE than guards-off: median arc 655 vs 735 cm,
+    # 4/10 lost vs 0). A genuinely locked hard turn rotates ~564 deg per
+    # window, so 340 keeps the real protection with margin both ways.
     def __init__(self, policy: MLPPolicy,
                  switch_margin: float = 0.08,
                  min_confidence: float = 0.35,
                  spin_window_s: float = 3.0,
-                 spin_turn_deg: float = 250.0,
+                 spin_turn_deg: float = 340.0,
                  front_block_cm: float = 6.0,
                  decision_hz: float = 10.0,
                  enabled: bool = True):
