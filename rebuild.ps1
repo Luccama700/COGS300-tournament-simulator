@@ -27,7 +27,7 @@ python -m training.train --data data/train.csv --out models/mine.npz --hidden 96
 
 Write-Host "== 5/5  evaluating (20 episodes) ==" -ForegroundColor Cyan
 python evaluate_policy.py --policy models/mine.npz `
-    --track $TRACK --robot $ROBOT --physics $PHYS --episodes 20 --randomization mild
+    --track $TRACK --robot $ROBOT --physics $PHYS --episodes 20 --randomization mild --max-time 240
 
 Write-Host ""
 Write-Host "Done. Watch your model drive with:" -ForegroundColor Green
