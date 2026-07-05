@@ -231,7 +231,9 @@ Threshold comparison on the Arduino: `if (analogRead(IR_PIN) > threshold)` detec
 > **Start here for understanding:** [`docs/PROJECT_GUIDE.md`](docs/PROJECT_GUIDE.md)
 > explains every technique in this pipeline and why it exists.
 > [`docs/AGENT_HANDOFF.md`](docs/AGENT_HANDOFF.md) is the mission brief for
-> continuing the open work (maze-phase cloning).
+> continuing the open work (maze-phase cloning); [`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md)
+> and [`docs/lessons/`](docs/lessons/) are the run log and hard-won lessons that
+> carry state between agent sessions.
 
 The original pipeline (`generate_line_data.py` → external training) produced
 models that spun in place and crashed. Post-mortem of that pipeline found five
