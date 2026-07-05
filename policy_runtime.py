@@ -191,6 +191,62 @@ class MLPPolicy:
         return e / e.sum(axis=-1, keepdims=True)
 
 
+class GRUPolicy:
+    """
+    Single-layer GRU + linear head in pure numpy, loaded from the .npz
+    produced by training/train_gru.py (torch weights exported verbatim).
+
+    Stateful: predict_proba() advances the hidden state one decision step,
+    so it must be called exactly once per step and reset() once per episode
+    (PolicyRuntime does both). Gate order matches torch.nn.GRU: r, z, n.
+    """
+
+    def __init__(self, data, meta: dict):
+        self.W_ih = data["W_ih"]          # (3H, I)
+        self.W_hh = data["W_hh"]          # (3H, H)
+        self.b_ih = data["b_ih"]
+        self.b_hh = data["b_hh"]
+        self.W_out = data["W_out"]        # (6, H)
+        self.b_out = data["b_out"]
+        self.mean = data["mean"]
+        self.std = data["std"]
+        self.meta = meta
+        self.hidden = self.W_hh.shape[1]
+        self.reset()
+
+    @classmethod
+    def load(cls, path: str) -> "GRUPolicy":
+        data = np.load(path, allow_pickle=False)
+        meta = json.loads(str(data["meta_json"]))
+        return cls(data, meta)
+
+    def reset(self):
+        self.h = np.zeros(self.hidden, dtype=np.float32)
+
+    def predict_proba(self, x: np.ndarray) -> np.ndarray:
+        z = ((x - self.mean) / self.std).astype(np.float32)
+        H = self.hidden
+        gi = self.W_ih @ z + self.b_ih
+        gh = self.W_hh @ self.h + self.b_hh
+        r = 1.0 / (1.0 + np.exp(-(gi[:H] + gh[:H])))
+        u = 1.0 / (1.0 + np.exp(-(gi[H:2 * H] + gh[H:2 * H])))
+        n = np.tanh(gi[2 * H:] + r * gh[2 * H:])
+        self.h = ((1.0 - u) * n + u * self.h).astype(np.float32)
+        logits = self.W_out @ self.h + self.b_out
+        logits = logits - logits.max()
+        e = np.exp(logits)
+        return e / e.sum()
+
+
+def load_policy(path: str):
+    """Load a policy .npz, dispatching on the architecture recorded in meta."""
+    data = np.load(path, allow_pickle=False)
+    meta = json.loads(str(data["meta_json"]))
+    if meta.get("arch") == "gru":
+        return GRUPolicy(data, meta)
+    return MLPPolicy.load(path)
+
+
 # ── Runtime with safety guards ───────────────────────────────────────────────
 
 class PolicyRuntime:
@@ -228,6 +284,8 @@ class PolicyRuntime:
 
     def reset(self):
         self.fb.reset()
+        if hasattr(self.policy, "reset"):
+            self.policy.reset()          # recurrent policies carry state
         self._cmd = CMD_STOP
         self._recover = 0
         self._prev_heading = None

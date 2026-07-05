@@ -110,7 +110,18 @@ class SimEnv:
 
     # ------------------------------------------------------------------
 
-    def reset(self, seed: int | None = None) -> dict:
+    def reset(self, seed: int | None = None,
+              start_pose: tuple[float, float, float] | None = None,
+              odom_init: tuple[float, float] | None = None) -> dict:
+        """
+        start_pose: optional (x, y, heading_deg) override for segment-start
+            evaluation (spawn mid-route). Randomization jitter still applies.
+        odom_init: optional (distance_cm, heading_deg) initial odometry state.
+            REQUIRED when start_pose is mid-route: the policy's `distance` and
+            heading features must look like they do in training at that point,
+            or the eval is invalid (docs/lessons/segment-eval-odometer-trap.md).
+            The caller adds realism noise; values are used as-is.
+        """
         if seed is not None:
             self.rng.seed(seed)
         r, rng = self.rand, self.rng
@@ -135,15 +146,21 @@ class SimEnv:
                                     track_lines=self.track.line_paths)
         self.engine.ir_sim.NOISE_STD = 20.0 * rng.uniform(*r.ir_noise_scale)
 
+        sx, sy, sh = ((self.track.start_x, self.track.start_y,
+                       self.track.start_heading)
+                      if start_pose is None else start_pose)
         self.state = RobotState(
-            x=self.track.start_x + rng.gauss(0, r.start_pos_std) if r.start_pos_std else self.track.start_x,
-            y=self.track.start_y + rng.gauss(0, r.start_pos_std) if r.start_pos_std else self.track.start_y,
-            heading=self.track.start_heading + (rng.gauss(0, r.start_heading_std) if r.start_heading_std else 0.0),
+            x=sx + rng.gauss(0, r.start_pos_std) if r.start_pos_std else sx,
+            y=sy + rng.gauss(0, r.start_pos_std) if r.start_pos_std else sy,
+            heading=sh + (rng.gauss(0, r.start_heading_std) if r.start_heading_std else 0.0),
         )
 
         # Odometry state (what the firmware would compute from encoders)
         self._odom_heading = 0.0        # firmware heading starts at 0 at boot
         self._odom_dist = 0.0
+        if odom_init is not None:
+            self._odom_dist, self._odom_heading = odom_init
+            self._odom_heading %= 360.0
         self._enc_l = 0
         self._enc_r = 0
         self._enc_scale = rng.gauss(1.0, r.odom_scale_std) if r.odom_scale_std else 1.0

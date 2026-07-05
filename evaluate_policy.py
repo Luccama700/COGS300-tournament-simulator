@@ -27,7 +27,7 @@ from track import load_track
 from robot_config import load_robot_config
 from physics import load_physics_params
 from expert_policy import build_route, make_follower, plot_route, CMD_STOP
-from policy_runtime import MLPPolicy, PolicyRuntime
+from policy_runtime import load_policy, PolicyRuntime
 from sim_env import SimEnv, RANDOMIZATION_PRESETS
 
 
@@ -46,7 +46,7 @@ def evaluate(track_path: str, robot_path: str, physics_path: str,
     if expert_mode:
         route, info = build_route(track)
     else:
-        model = MLPPolicy.load(policy_path)
+        model = load_policy(policy_path)
         runtime = PolicyRuntime(model, decision_hz=decision_hz, enabled=safeguards)
 
     stats = {"success": 0, "times": [], "contacts": [], "spins": 0,
