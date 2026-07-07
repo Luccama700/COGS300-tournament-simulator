@@ -139,14 +139,18 @@ track_editor.py         ← interactive track editor
 # ── ML pipeline (v2) ──────────────────────────────────────────────
 expert_policy.py        ← privileged expert: route planner + discrete-command follower
 sim_env.py              ← closed-loop sim env with firmware-faithful observations
-policy_runtime.py       ← feature builder + MLP inference + anti-spin safeguards
-generate_data_v2.py     ← training data generation (supersedes generate_line_data.py)
-evaluate_policy.py      ← closed-loop evaluation (success rate, spins, collisions)
+policy_runtime.py       ← feature builder + MLP/GRU numpy inference + safeguards
+generate_data_v2.py     ← training data generation
+make_maze_track.py      ← derives the maze-only track from the full track
+evaluate_policy.py      ← closed-loop evaluation (success rate, route-arc progress)
 training/
-  train.py              ← numpy MLP trainer (class-balanced, episode-split val)
-  dagger.py             ← DAgger loop (fixes compounding-error drift)
-  dataset.py            ← CSV loading helpers
-  filter_data.py        ← episode-quality filtering (legacy pipeline)
+  train.py              ← numpy MLP trainer (baseline; class-balanced, episode-split val)
+  train_gru.py          ← torch GRU trainer + closed-loop checkpoint selection
+  dagger_gru.py         ← DAgger loop (guards-on rollouts, keep-best, prefix coverage)
+  closed_loop.py        ← parallel closed-loop eval (the selection metric)
+  segment_eval.py       ← spawn episodes mid-route to localize failures
+  phase_acc.py          ← tape-vs-maze frame-agreement diagnostic
+  merge_datasets.py     ← CSV merging with episode renumbering
 
 configs/
   robot-config.yaml     ← chassis geometry and sensor layout
@@ -245,7 +249,7 @@ compounding causes, all fixed in v2:
 | 2 | Expert drove custom continuous-steering kinematics, labels discretized afterwards | Labels unreachable by the firmware's 6 discrete commands; train/test dynamics mismatch | Expert emits the 6 firmware commands directly and drives the real `physics.py` engine |
 | 3 | Features included absolute heading, est_x/est_y, elapsed time | Model memorized one trajectory; any deviation → garbage inputs → compounding errors → spinning | Sensor-only features + short history + IR line-memory + last command (`policy_runtime.FeatureBuilder`) |
 | 4 | Sim ultrasonic dropout returned 0.0cm; firmware returns 200 on timeout; data-gen used a third noise model with no dropouts | Test-time inputs the model never saw during training | One sensor model everywhere; dropouts return max range like the firmware (`sensor_model.py`) |
-| 5 | Single deterministic demonstration, no recovery states | No data for "slightly off the line" states → first error was fatal | Domain randomization (`sim_env.py`) + DAgger (`training/dagger.py`) |
+| 5 | Single deterministic demonstration, no recovery states | No data for "slightly off the line" states → first error was fatal | Domain randomization (`sim_env.py`) + DAgger (`training/dagger_gru.py`) |
 
 Additionally, the bounding-circle collision model made the maze's 20cm slits
 impassable for the 22cm circle even though the real 12cm-wide chassis fits;
@@ -297,38 +301,50 @@ overshot strokes) sealed the SE room chain, the spiral mouth, the spiral exit,
 and the top corridor. `COGS_300_Tournament_Track_v03.yaml` removes those and
 opens a doorway into the goal antechamber. **The entrance-chicane geometry is a
 reconstruction — check it against the physical track and re-digitize if it
-differs** (v01/v02 are untouched for reference).
+differs** (broken v01/v02 removed 2026-07-06 — recover from git history if
+ever needed).
 
 ### Workflow
 
+> **Scope note (2026-07-06):** the graded objective is now the **maze-only**
+> track (`..._v03_maze.yaml`, starts at the maze mouth — see
+> `docs/AGENT_HANDOFF.md`). The commands below show the current pipeline;
+> swap in the full-course v03 track to reproduce historical numbers.
+
 ```bash
-TRACK=configs/tracks/COGS_300_Tournament_Track/COGS_300_Tournament_Track_v03.yaml
+TRACK=configs/tracks/COGS_300_Tournament_Track/COGS_300_Tournament_Track_v03_maze.yaml
 ROBOT=configs/robot-config-frontIR.yaml   # see hardware finding above
+PHYS=configs/physics-slow.yaml
 
 # 0. Sanity gate: the expert must reach the goal reliably
-python evaluate_policy.py --track $TRACK --robot $ROBOT --policy expert --episodes 20
+python evaluate_policy.py --track $TRACK --robot $ROBOT --physics $PHYS \
+    --policy expert --episodes 15 --max-time 150
 
 # 1. Generate behavior-cloning data (expert demos in the real sim)
-python generate_data_v2.py --track $TRACK --robot $ROBOT --episodes 200 \
-    --randomization mild --output data/bc_mild.csv --workers 4
-python generate_data_v2.py --track $TRACK --robot $ROBOT --episodes 100 \
-    --randomization heavy --output data/bc_heavy.csv --workers 4
-python -m training.merge_datasets --out data/bc_train.csv data/bc_mild.csv data/bc_heavy.csv
+python generate_data_v2.py --track $TRACK --robot $ROBOT --physics $PHYS --episodes 200 \
+    --randomization mild --output data/maze2_mild.csv --workers 4
+python generate_data_v2.py --track $TRACK --robot $ROBOT --physics $PHYS --episodes 100 \
+    --randomization heavy --output data/maze2_heavy.csv --workers 4
+python -m training.merge_datasets --out data/maze2_train.csv data/maze2_mild.csv data/maze2_heavy.csv
 
-# 2. Train the command classifier
-python -m training.train --data data/bc_train.csv --out models/policy_bc.npz
+# 2. Train the GRU policy (torch; checkpoints selected by CLOSED-LOOP driving,
+#    never validation accuracy — see docs/lessons/)
+python -m training.train_gru --data data/maze2_train.csv --out models/policy_gru_maze.npz \
+    --epochs 40 --track $TRACK
 
 # 3. Closed-loop evaluation (the metric that matters)
-python evaluate_policy.py --track $TRACK --robot $ROBOT --policy models/policy_bc.npz \
-    --episodes 20 --randomization mild --plot eval_bc.png
+python evaluate_policy.py --track $TRACK --robot $ROBOT --physics $PHYS \
+    --policy models/policy_gru_maze.npz --episodes 20 --randomization mild \
+    --max-time 150 --plot eval_gru.png
 
 # 4. DAgger — retrain on the learner's own mistake states
-python -m training.dagger --track $TRACK --robot $ROBOT --base-data data/bc_train.csv \
-    --iters 3 --episodes-per-iter 40 --out models/policy_dagger.npz
+python -m training.dagger_gru --track $TRACK --base-data data/maze2_train.csv \
+    --init models/policy_gru_maze.npz --iters 4 --episodes-per-iter 60 \
+    --out models/policy_gru_maze_dagger.npz
 
-# 5. Final evaluation
-python evaluate_policy.py --track $TRACK --robot $ROBOT \
-    --policy models/policy_dagger.npz --episodes 30 --randomization mild
+# 5. Final claims: >=30 episodes, seeds 31000+, guards on AND off
+python -m training.closed_loop --policy models/policy_gru_maze_dagger.npz \
+    --track $TRACK --episodes 30 --seed 31000 --max-time 150
 ```
 
 `policy_runtime.PolicyRuntime` is the deployable inference stack (features →

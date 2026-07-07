@@ -45,8 +45,10 @@ the entire difficulty, and most of this document is about it.
  expert:            expert_policy.py — plans a route and drives SimEnv perfectly
                       (only exists in sim; used to LABEL data, never deployed)
 
- learning:          generate_data_v2.py → training/train.py → evaluate_policy.py
-                                        → training/dagger.py
+ learning:          generate_data_v2.py → training/train.py (MLP baseline)
+                                          or training/train_gru.py (GRU)
+                                        → evaluate_policy.py
+                                        → training/dagger_gru.py
  deployment stack:  policy_runtime.py — features + MLP + safety guards
                       (imports nothing sim-specific; drop into the UDP relay)
 ```
@@ -182,7 +184,7 @@ disagreement puts the robot in a state slightly outside the training
 distribution, where the next error is bigger. Over ~1,200 sequential
 decisions, tiny per-step error compounds relentlessly.
 
-### 4.6 DAgger (`training/dagger.py`)
+### 4.6 DAgger (`training/dagger_gru.py`; the original `training/dagger.py` described here was removed 2026-07-06 after its defects were fixed in the GRU loop)
 
 The textbook fix for compounding error (Ross et al. 2011): roll out the
 *learner*, label every state it visits with the *expert's* action, add to the
