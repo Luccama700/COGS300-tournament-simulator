@@ -184,6 +184,7 @@ def main():
         res0 = run_closed_loop(model_path, args.track, args.robot,
                                args.physics, episodes=args.select_episodes,
                                seed=args.select_seed,
+                               max_time=args.max_time,
                                randomization=args.randomization)
         best_global = (score_key(res0), model_path, res0, 0)
     arc0 = (100.0 * res0["median_max_arc"] / res0["route_total"]

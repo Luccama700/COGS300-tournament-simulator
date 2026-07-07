@@ -170,6 +170,7 @@ def train_gru_core(episodes, schema: dict, ckpt_dir: str,
                    seed=0, val_frac=0.1,
                    select_every=4, select_episodes=10, select_seed=20000,
                    select_workers=4, select_randomization="mild",
+                   select_max_time=150.0,
                    track=TRACK_DEFAULT, robot=ROBOT_DEFAULT, phys=PHYS_DEFAULT,
                    run_parity=False, tag=""):
     """
@@ -247,6 +248,7 @@ def train_gru_core(episodes, schema: dict, ckpt_dir: str,
             res = run_closed_loop(path, track, robot, phys,
                                   episodes=select_episodes, seed=select_seed,
                                   randomization=select_randomization,
+                                  max_time=select_max_time,
                                   workers=select_workers)
             key = score_key(res)
             history.append({"epoch": epoch, "val_balanced_acc": bal, **res})
@@ -283,6 +285,7 @@ def main():
     ap.add_argument("--select-seed", type=int, default=20000)
     ap.add_argument("--select-workers", type=int, default=4)
     ap.add_argument("--select-randomization", default="mild")
+    ap.add_argument("--select-max-time", type=float, default=150.0)
     ap.add_argument("--track", default=TRACK_DEFAULT)
     ap.add_argument("--robot", default=ROBOT_DEFAULT)
     ap.add_argument("--physics", default=PHYS_DEFAULT)
@@ -307,6 +310,7 @@ def main():
         select_every=args.select_every, select_episodes=args.select_episodes,
         select_seed=args.select_seed, select_workers=args.select_workers,
         select_randomization=args.select_randomization,
+        select_max_time=args.select_max_time,
         track=args.track, robot=args.robot, phys=args.physics,
         run_parity=True)
 
