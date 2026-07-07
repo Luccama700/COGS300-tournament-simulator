@@ -128,18 +128,34 @@ Open the editor with `python run_test.py --editor`.
 
 ```
 run_test.py             ← main entry point (drive + editor launcher)
-physics.py              ← physics engine (kinematics, collision, raycasting)
+physics.py              ← physics engine (kinematics, oriented-rect collision, raycasting)
 renderer.py             ← Pygame drawing (robot, walls, sensors, HUD)
 robot_config.py         ← robot YAML loader and geometry helpers
 sensor_model.py         ← HC-SR04 ultrasonic noise model
 ir_model.py             ← TCRT5000 IR reflectance model
-track.py                ← track data model (load/save YAML)
+track.py                ← track data model (load/save YAML, line graph + A*)
 track_editor.py         ← interactive track editor
+
+# ── ML pipeline (v2) ──────────────────────────────────────────────
+expert_policy.py        ← privileged expert: route planner + discrete-command follower
+sim_env.py              ← closed-loop sim env with firmware-faithful observations
+policy_runtime.py       ← feature builder + MLP/GRU numpy inference + safeguards
+generate_data_v2.py     ← training data generation
+make_maze_track.py      ← derives the maze-only track from the full track
+evaluate_policy.py      ← closed-loop evaluation (success rate, route-arc progress)
+training/
+  train.py              ← numpy MLP trainer (baseline; class-balanced, episode-split val)
+  train_gru.py          ← torch GRU trainer + closed-loop checkpoint selection
+  dagger_gru.py         ← DAgger loop (guards-on rollouts, keep-best, prefix coverage)
+  closed_loop.py        ← parallel closed-loop eval (the selection metric)
+  segment_eval.py       ← spawn episodes mid-route to localize failures
+  phase_acc.py          ← tape-vs-maze frame-agreement diagnostic
+  merge_datasets.py     ← CSV merging with episode renumbering
 
 configs/
   robot-config.yaml     ← chassis geometry and sensor layout
   physics.yaml          ← physics and display parameters
-  track.yaml            ← saved track (created by the editor)
+  tracks/               ← saved tracks (v03 = repaired tournament track)
 
 calibration/
   capture.py            ← serial capture tool for Arduino calibration data
@@ -147,6 +163,7 @@ calibration/
 
 arduino/
   hc_sr04_calibration/  ← Arduino sketch for HC-SR04 calibration
+  robot_firmware/       ← robot firmware (WiFi AP + UDP sensor/command loop)
 ```
 
 ---
@@ -212,6 +229,152 @@ Returns a 0–1023 analog value matching real `analogRead()` output:
 Threshold comparison on the Arduino: `if (analogRead(IR_PIN) > threshold)` detects tape.
 
 ---
+
+## Machine learning pipeline (v2)
+
+> **Start here for understanding:** [`docs/PROJECT_GUIDE.md`](docs/PROJECT_GUIDE.md)
+> explains every technique in this pipeline and why it exists.
+> [`docs/AGENT_HANDOFF.md`](docs/AGENT_HANDOFF.md) is the mission brief for
+> continuing the open work (maze-phase cloning); [`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md)
+> and [`docs/lessons/`](docs/lessons/) are the run log and hard-won lessons that
+> carry state between agent sessions.
+
+The original pipeline (`generate_line_data.py` → external training) produced
+models that spun in place and crashed. Post-mortem of that pipeline found five
+compounding causes, all fixed in v2:
+
+| # | Old-pipeline defect | Consequence | v2 fix |
+|---|---------------------|-------------|--------|
+| 1 | The data-gen expert only followed the tape lines, but every track's goal is inside the walled maze — it could never finish, then logged STOP forever | **90.8% of training rows were STOP**, nearly all the rest were turns (0.4% FORWARD) | Hybrid expert: A* over the line network + A* over an inflated occupancy grid through the maze (`expert_policy.py`) |
+| 2 | Expert drove custom continuous-steering kinematics, labels discretized afterwards | Labels unreachable by the firmware's 6 discrete commands; train/test dynamics mismatch | Expert emits the 6 firmware commands directly and drives the real `physics.py` engine |
+| 3 | Features included absolute heading, est_x/est_y, elapsed time | Model memorized one trajectory; any deviation → garbage inputs → compounding errors → spinning | Sensor-only features + short history + IR line-memory + last command (`policy_runtime.FeatureBuilder`) |
+| 4 | Sim ultrasonic dropout returned 0.0cm; firmware returns 200 on timeout; data-gen used a third noise model with no dropouts | Test-time inputs the model never saw during training | One sensor model everywhere; dropouts return max range like the firmware (`sensor_model.py`) |
+| 5 | Single deterministic demonstration, no recovery states | No data for "slightly off the line" states → first error was fatal | Domain randomization (`sim_env.py`) + DAgger (`training/dagger_gru.py`) |
+
+Additionally, the bounding-circle collision model made the maze's 20cm slits
+impassable for the 22cm circle even though the real 12cm-wide chassis fits;
+`physics.py` now collides the true oriented rectangle (and models wedging).
+
+### ⚠ Hardware finding: rear-mounted IR sensors cannot track the tape
+
+The strongest result of this work is not about ML at all. With the IR
+sensors at the **back** of the chassis (`robot-config.yaml`, mount_y +0.55),
+even a hand-written controller with direct sensor access loses the tape and
+circles hunting for it — the same "spinning like crazy" the real robot showed:
+
+* A yaw correction swings the rear (where the sensors are) the *wrong way*
+  first, so the robot translates 20-25cm off the tape before the sensors
+  re-cross it (unstable lever arm).
+* Once lost, a hard-turn search sweeps a ~25cm circle — smaller than the
+  distance to the lost tape — so it orbits indefinitely.
+* Measured in sim: a sensor-driven expert needs pose-based rescue ~27s per
+  run with rear sensors, vs ~8s with the same sensors moved to the front.
+
+`configs/robot-config-frontIR.yaml` is identical hardware with the two
+TCRT5000s moved to the chassis front (mount_y −0.55). With front sensors the
+classic 3-state follower (steer toward the hot sensor, straight when quiet,
+one-shot pivot at sharp corners) completes the course 45/45 across all
+randomization presets. **Recommendation: physically move the IR sensors to
+the front of the robot.** The ML pipeline below uses the front-IR config;
+it also runs with the rear config, but the resulting demonstrations lean on
+privileged rescue and clone poorly.
+
+Three firmware changes are required to match the sim (all small):
+* Sample `analogRead(IR_*)` fast and report the **max since the last packet**
+  (peak-hold) — at 28cm/s a tape crossing lasts well under one 10Hz packet
+  and a single sample misses it. The sim models peak-hold.
+* **Sign the encoder tick deltas by the commanded wheel direction** in
+  `updateOdometry()` (`executeCommand` knows each wheel's direction). The
+  single-channel encoders are direction-blind, so stock firmware corrupts
+  heading by ~50% of every hard turn and inflates `distanceTraveled` while
+  pivoting — which makes all dead-reckoning features (and the policy's
+  heading input) unusable. The sim integrates signed wheel travel.
+* Read the three HC-SR04s without the blocking `delay(60)` calls (staggered
+  pings or echo-pin interrupts) so the control loop can run at ~10Hz instead
+  of ~5Hz.
+
+### Track repairs (v03)
+
+Connectivity analysis showed the digitized tournament track was **unsolvable**:
+the goal room was fully sealed, and four phantom cross-walls (double-drawn or
+overshot strokes) sealed the SE room chain, the spiral mouth, the spiral exit,
+and the top corridor. `COGS_300_Tournament_Track_v03.yaml` removes those and
+opens a doorway into the goal antechamber. **The entrance-chicane geometry is a
+reconstruction — check it against the physical track and re-digitize if it
+differs** (broken v01/v02 removed 2026-07-06 — recover from git history if
+ever needed).
+
+### Workflow
+
+> **Scope note (2026-07-06):** the graded objective is now the **maze-only**
+> track (`..._v03_maze.yaml`, starts at the maze mouth — see
+> `docs/AGENT_HANDOFF.md`). The commands below show the current pipeline;
+> swap in the full-course v03 track to reproduce historical numbers.
+
+```bash
+TRACK=configs/tracks/COGS_300_Tournament_Track/COGS_300_Tournament_Track_v03_maze.yaml
+ROBOT=configs/robot-config-frontIR.yaml   # see hardware finding above
+PHYS=configs/physics-slow.yaml
+
+# 0. Sanity gate: the expert must reach the goal reliably
+python evaluate_policy.py --track $TRACK --robot $ROBOT --physics $PHYS \
+    --policy expert --episodes 15 --max-time 150
+
+# 1. Generate behavior-cloning data (expert demos in the real sim)
+python generate_data_v2.py --track $TRACK --robot $ROBOT --physics $PHYS --episodes 200 \
+    --randomization mild --output data/maze2_mild.csv --workers 4
+python generate_data_v2.py --track $TRACK --robot $ROBOT --physics $PHYS --episodes 100 \
+    --randomization heavy --output data/maze2_heavy.csv --workers 4
+python -m training.merge_datasets --out data/maze2_train.csv data/maze2_mild.csv data/maze2_heavy.csv
+
+# 2. Train the GRU policy (torch; checkpoints selected by CLOSED-LOOP driving,
+#    never validation accuracy — see docs/lessons/)
+python -m training.train_gru --data data/maze2_train.csv --out models/policy_gru_maze.npz \
+    --epochs 40 --track $TRACK
+
+# 3. Closed-loop evaluation (the metric that matters)
+python evaluate_policy.py --track $TRACK --robot $ROBOT --physics $PHYS \
+    --policy models/policy_gru_maze.npz --episodes 20 --randomization mild \
+    --max-time 150 --plot eval_gru.png
+
+# 4. DAgger — retrain on the learner's own mistake states
+python -m training.dagger_gru --track $TRACK --base-data data/maze2_train.csv \
+    --init models/policy_gru_maze.npz --iters 4 --episodes-per-iter 60 \
+    --out models/policy_gru_maze_dagger.npz
+
+# 5. Final claims: >=30 episodes, seeds 31000+, guards on AND off
+python -m training.closed_loop --policy models/policy_gru_maze_dagger.npz \
+    --track $TRACK --episodes 30 --seed 31000 --max-time 150
+```
+
+`policy_runtime.PolicyRuntime` is the deployable inference stack (features →
+MLP → guards). Its safety guards use only firmware observables, so the same
+class can drive the real robot from the laptop UDP relay:
+probability-margin command switching (anti-dither), low-confidence hold,
+a spin watchdog (sustained one-direction rotation → straight burst), and a
+front-wall reflex. Guards can be disabled (`--no-safeguards`) to measure the
+raw model.
+
+### Current results (v03 track, front-IR config, BASE_SPEED 110)
+
+| Policy | Full-course success (mild randomization) | Notes |
+|--------|------------------------------------------|-------|
+| Sensor-driven expert (`--policy expert`) | **15/15 – 20/20** across none/mild/heavy | Tape bang-bang + fire-armed corner pivots + wall-hug transit + maze pursuit; ~118s runs |
+| Behavior cloning (96×96 MLP, 336k rows; committed as `models/policy_bc.npz`) | 0/20 | 92.1% balanced per-frame val acc; masters the tape phase (locks through every zigzag vertex), degrades over the ~1200-decision horizon in the maze |
+| + DAgger (mixed rollouts, 3-4 iters × 50 eps) | up to 5/50 during β=0.15 rollouts; 0/15 per checkpoint with guards (best single run: 67cm from goal) | Mid-loop checkpoints peak, late iterations drown in recovery-state labels |
+
+The honest summary: the *system* now works — simulator physics, track, expert
+autopilot, data/train/eval/DAgger infrastructure — and the cloned policy
+reliably solves the tape section, which is where the original robot spun and
+crashed. Cloning the full 20+-decision-per-second, two-minute course into a
+feedforward net remains open; the highest-leverage next steps are a recurrent
+policy (the expert is a state machine; its hidden state defeats feedforward
+nets), closed-loop checkpoint selection inside the DAgger loop, and recovery-
+data downweighting so late iterations stop regressing.
+
+Note on odometry: the sim integrates signed wheel travel for heading and
+distance, which corresponds to the signed-tick firmware fix described above.
+The raw `enc_l`/`enc_r` counters remain direction-blind like the hardware.
 
 ## Robot configurator app
 

@@ -225,9 +225,11 @@ def build_line_graph(track: TrackData, merge_radius: float = 3.0) -> tuple[list[
             nodes.append(node)
             point_to_node[pi] = node.id
 
-    # Build edges: each segment connects its start node to its end node
+    # Build edges: each segment connects its start node to its end node.
+    # Must iterate the SPLIT segment list — raw_points was built from it, so
+    # indexing track.line_paths here would desync node ids after any T-split.
     seen_edges: set[tuple[int, int]] = set()
-    for i, seg in enumerate(track.line_paths):
+    for i, seg in enumerate(segments):
         start_pi = i * 2
         end_pi = i * 2 + 1
         n1 = point_to_node[start_pi]

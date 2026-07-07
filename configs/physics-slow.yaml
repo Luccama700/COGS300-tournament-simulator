@@ -1,0 +1,25 @@
+# Same as physics.yaml but with firmware BASE_SPEED lowered 150 -> 110
+# (~25 cm/s instead of ~35). The learned policy gets ~40% more decisions
+# per centimeter and every overshoot shrinks. On hardware this is a
+# one-line change to the BASE_SPEED #define.
+physics:
+  max_wheel_speed_cmps: 60.0
+  motor_tau: 0.08
+  wall_bounce: 0.2
+  wall_slide_friction: 0.5
+  collision_margin: 1.0
+  sensor_noise_std: 2.0
+  sensor_dropout_chance: 0.02
+  sensor_dropout_value: 0.0
+  sensor_min_range: 2.0
+  base_pwm: 110
+display:
+  window_width: 1000
+  window_height: 700
+  fps: 60
+  background_color:
+  - 245
+  - 245
+  - 240
+  grid_spacing: 50
+  pixels_per_cm: 4
