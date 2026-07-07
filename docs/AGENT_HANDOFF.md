@@ -27,20 +27,35 @@ as the hard research problem it is, not a checklist to clear.
 
 ## The goal
 
-Train a policy that completes the course from sensors alone. Done means:
+**SCOPE CHANGE (owner, 2026-07-06): the graded objective is now the WALL/MAZE
+section only.** Line following is deprioritized — its code stays intact (it
+is verified, and the bang-bang follower could run on the real robot as a
+hand-coded stage), but training, evaluation, and the success bars all move to
+the maze-only track, which starts at the maze mouth of the tournament course:
+`configs/tracks/COGS_300_Tournament_Track/COGS_300_Tournament_Track_v03_maze.yaml`
+(generated reproducibly by `make_maze_track.py`; route ≈1387 cm; expert gate
+15/15 mild and 15/15 heavy at ~66 s, verified 2026-07-06).
+
+Train a policy that completes the maze from sensors alone. Done means:
 
 - **≥80% success over ≥30 episodes**: `--randomization mild`, seeds 31000+,
-  safeguards ON, v03 track, front-IR robot, slow physics, `--max-time 240`.
+  safeguards ON, v03_maze track, front-IR robot, slow physics,
+  `--max-time 150`.
 - Then **≥50% on `--randomization heavy`**.
 - Headline claims come with a `--no-safeguards` eval alongside, so nobody
   mistakes guard-driving for learning.
 - The final model is committed as `models/policy_final.npz`, reproducible
   from `docs/EXPERIMENTS.md`.
-- The expert gate is still green.
+- The expert gate is still green (run it on BOTH tracks if you touch the
+  expert, sim, physics, or tracks).
 
 A hybrid (model + hand-coded reflexes) is a fallback deliverable only. The
 graded objective is the learned policy; the existing `PolicyRuntime` guards
 are the agreed reflex budget.
+
+The old full-course goal (tape + maze on v03) remains documented below and
+in PROJECT_GUIDE.md as context; treat full-course numbers as historical
+baselines, not targets.
 
 ## Hard boundaries
 
